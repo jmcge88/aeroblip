@@ -1,0 +1,24 @@
+services:
+  flight-info:
+    build: .
+    container_name: flight-info
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-Australia/Brisbane}
+      # Shell override: $env:DEMO_MODE="true"; docker compose up -d (falls back to .env)
+      - DEMO_MODE
+    volumes:
+      # Device-token registry + logo cache survive rebuilds.
+      #
+      # The container runs as uid 10001 (non-root), and a bind mount keeps the
+      # HOST's ownership - so on Linux this directory must be made writable by
+      # that uid once, or every write fails:
+      #     sudo chown -R 10001:10001 ./data
+      # Docker Desktop on Windows/macOS ignores ownership; nothing to do there.
+      - ./data:/srv/data
+      # OTA firmware images published by tools/flash_product.py --release
+      - ./fw:/srv/fw:ro

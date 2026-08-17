@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0a0e14">
+  <title>Flight Board</title>
+  <!-- Leaflet is vendored, not hotlinked: a CDN compromise would otherwise get
+       script execution on every dashboard, and a LAN kiosk should not need the
+       internet to render its own map chrome. static/vendor/README.md records
+       the version and the upstream SRI hashes these files were checked against. -->
+  <link rel="stylesheet" href="/static/vendor/leaflet.css?v=1.9.4">
+  <link rel="stylesheet" href="/static/style.css?v=21">
+</head>
+<body>
+  <header id="header">
+    <div id="view-title">OVERHEAD</div>
+    <div id="clock">--:--:--</div>
+  </header>
+
+  <main>
+    <!-- Squawk 7500/7600/7700 emergency takeover -->
+    <section id="emergency-view" class="view hidden">
+      <div id="em-banner"></div>
+      <div class="em-body">
+        <div id="em-info"></div>
+        <div id="em-map"></div>
+      </div>
+    </section>
+
+    <!-- Spotlight: a single flight directly overhead -->
+    <section id="spotlight-view" class="view hidden"></section>
+
+    <!-- Nearby traffic list -->
+    <section id="radar-view" class="view">
+      <div id="aircraft-list"></div>
+      <div id="radar-empty" class="hidden">
+        <div class="empty-msg">CLEAR SKIES</div>
+      </div>
+    </section>
+
+    <!-- Airport board view -->
+    <section id="board-view" class="view hidden">
+      <div class="board-header">
+        <span id="board-direction">DEPARTURES</span>
+        <span id="board-airport"></span>
+      </div>
+      <table class="board-table">
+        <thead>
+          <tr>
+            <th class="col-time">TIME</th>
+            <th class="col-flight">FLIGHT</th>
+            <th class="col-city">CITY</th>
+            <th class="col-gate">GATE</th>
+            <th class="col-status">STATUS</th>
+          </tr>
+        </thead>
+        <tbody id="board-rows"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer id="footer">
+    <span id="status-line">connecting…</span>
+    <button id="flyover-btn" class="hidden">SIMULATE FLYOVER</button>
+    <button id="em-btn" class="hidden">SIMULATE 7700</button>
+    <span id="mock-badge" class="hidden">DEMO DATA</span>
+    <span id="data-credit" style="opacity:.55">flight data &copy;
+      <a href="https://adsb.lol" style="color:inherit">adsb.lol</a> contributors (ODbL)</span>
+    <span id="footer-nav"><span id="flip-count"></span><nav id="page-dots"></nav>
+      <button id="loc-btn" title="Set view location">&#8982;</button></span>
+  </footer>
+
+  <div id="loc-panel" class="hidden">
+    <h3>VIEW LOCATION</h3>
+    <label for="loc-latlon">Location (lat, lon)</label>
+    <input id="loc-latlon" placeholder="-33.8688, 151.2093">
+    <button id="loc-gps" type="button">Use my location</button>
+    <label for="loc-radius">Overhead radius NM</label>
+    <input id="loc-radius" type="number" min="1" max="30" placeholder="5">
+    <label for="loc-area">Area radius NM</label>
+    <input id="loc-area" type="number" min="10" max="250" placeholder="60">
+    <label for="loc-airport">Airport code</label>
+    <input id="loc-airport" maxlength="4" placeholder="BNE">
+    <label for="loc-token">Device token (only if the server requires one)</label>
+    <input id="loc-token" placeholder="leave blank unless asked">
+    <div class="loc-row">
+      <button id="loc-save" type="button">Save</button>
+      <button id="loc-clear" type="button">Server default</button>
+    </div>
+    <p id="loc-note"></p>
+  </div>
+
+  <script src="/static/vendor/leaflet.js?v=1.9.4"></script>
+  <script src="/static/app.js?v=28"></script>
+</body>
+</html>

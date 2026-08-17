@@ -1,0 +1,558 @@
+:root {
+  --bg: #0a0e14;
+  --panel: #10161f;
+  --amber: #ffb400;
+  --amber-dim: #8f6a10;
+  --green: #3ddc84;
+  --red: #ff5c5c;
+  --text: #e8e6e3;
+  --text-dim: #7a828e;
+  --mono: "IBM Plex Mono", "Roboto Mono", "Consolas", monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- layout ---------- */
+#header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 2vh 3vw 1vh;
+  border-bottom: 2px solid var(--amber-dim);
+}
+
+#view-title {
+  font-size: 4.5vh;
+  font-weight: 700;
+  letter-spacing: 0.35em;
+  color: var(--amber);
+}
+
+#clock {
+  font-size: 4vh;
+  color: var(--text);
+  letter-spacing: 0.1em;
+}
+
+/* Flex column: header + footer take their natural height, main gets the
+   rest and clips its overflow - content can never slide behind the footer. */
+main { flex: 1; min-height: 0; overflow: hidden; }
+
+#footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1vh 3vw;
+  font-size: 1.6vh;
+  color: var(--text-dim);
+  border-top: 1px solid #1c2530;
+}
+
+#mock-badge {
+  color: var(--red);
+  letter-spacing: 0.2em;
+}
+
+#flyover-btn, #em-btn {
+  background: none;
+  border: 1px solid var(--amber-dim);
+  color: var(--amber);
+  font-family: var(--mono);
+  font-size: 1.6vh;
+  letter-spacing: 0.15em;
+  padding: 0.3vh 1.2vw;
+  border-radius: 0.4vh;
+  cursor: pointer;
+}
+
+#flyover-btn:active, #em-btn:active { background: var(--amber-dim); color: var(--bg); }
+
+/* Footer page dots + rotation countdown (mirrors the ESP footer) */
+#footer-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.4vw;
+}
+
+#flip-count {
+  color: var(--text-dim);
+  letter-spacing: 0.1em;
+}
+
+#page-dots { display: flex; gap: 1vw; }
+
+#page-dots .dot {
+  width: 1.4vh;
+  height: 1.4vh;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--text-dim);
+  background: none;
+  cursor: pointer;
+}
+
+#page-dots .dot.on { background: var(--amber); border-color: var(--amber); }
+
+.hidden { display: none !important; }
+
+.view { height: 100%; padding: 2vh 3vw; }
+
+/* ---------- radar view ---------- */
+#aircraft-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2vh;
+  height: 100%;
+  overflow: hidden;
+}
+
+.aircraft-card {
+  background: var(--panel);
+  border-left: 0.6vh solid var(--amber);
+  border-radius: 0.8vh;
+  padding: 2vh 2.5vw;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.5vh 2vw;
+}
+
+/* Leading identity column: the logo (or its placeholder) spans both rows */
+.aircraft-card > .ac-logo {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+.ac-photo {
+  height: 9.5vh;
+  width: 14vh;
+  object-fit: cover;
+  border-radius: 0.8vh;
+  border: 1px solid #1c2530;
+}
+
+.ac-main {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 1.5vw;
+}
+
+.ac-logo {
+  height: 4.2vh;
+  width: 4.2vh;
+  border-radius: 0.6vh;
+  background: #fff;
+  object-fit: contain;
+}
+
+/* Same footprint as a logo so cards align whether one loaded or not */
+.ac-logo-ph {
+  background: #10161f;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.4vh;
+  color: var(--text-dim);
+}
+
+.row-logo {
+  height: 3vh;
+  width: 3vh;
+  border-radius: 0.4vh;
+  background: #fff;
+  object-fit: contain;
+  vertical-align: middle;
+  margin-right: 0.6vw;
+}
+
+.ac-callsign {
+  font-size: 4.2vh;
+  font-weight: 700;
+  color: var(--amber);
+  letter-spacing: 0.08em;
+}
+
+.ac-route { font-size: 3.2vh; color: var(--text); }
+.ac-route .arrow { color: var(--text-dim); }
+
+.ac-sub {
+  grid-column: 2;
+  font-size: 2vh;
+  color: var(--text-dim);
+  display: flex;
+  gap: 2vw;
+  flex-wrap: wrap;
+}
+
+/* Fixed right-hand rail: airframe photo (when one loads) beside the compass */
+.ac-side {
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  display: flex;
+  align-items: center;
+  gap: 1.5vw;
+}
+
+.ac-compass {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4vh;
+}
+
+.ac-arrow {
+  font-size: 5vh;
+  color: var(--green);
+  display: inline-block;
+}
+
+.ac-dir { font-size: 1.8vh; color: var(--text-dim); letter-spacing: 0.15em; }
+
+.ac-phase-climbing  { color: var(--green); }
+.ac-phase-descending { color: var(--amber); }
+
+.ac-eta {
+  color: var(--amber);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+#radar-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-msg {
+  font-size: 5vh;
+  letter-spacing: 0.5em;
+  color: var(--text-dim);
+}
+
+/* ---------- spotlight view (single flight overhead) ---------- */
+.spotlight {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: 1fr auto;
+  gap: 0 3vw;
+  align-items: center;
+}
+
+.sp-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2.2vh;
+  min-width: 0;
+}
+
+.sp-airline {
+  display: flex;
+  align-items: center;
+  gap: 1.2vw;
+  font-size: 3vh;
+  color: var(--text-dim);
+  letter-spacing: 0.1em;
+}
+
+.sp-logo {
+  height: 6vh;
+  width: 6vh;
+  border-radius: 0.8vh;
+  background: #fff;
+  object-fit: contain;
+}
+
+.sp-callsign {
+  font-size: 9vh;
+  font-weight: 700;
+  color: var(--amber);
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+.sp-route .arrow { color: var(--text-dim); margin: 0 0.8vw; }
+
+.sp-route-codes {
+  font-size: 4.6vh;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-route-cities {
+  font-size: 2.4vh;
+  color: var(--text-dim);
+  margin-top: 0.5vh;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-route-unknown { color: var(--text-dim); }
+
+.sp-eta {
+  font-size: 2.6vh;
+  color: var(--amber);
+  letter-spacing: 0.15em;
+}
+
+.sp-eta:empty { display: none; }
+
+.sp-facts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2vh 2vw;
+  margin-top: 1vh;
+}
+
+.sp-fact label {
+  display: block;
+  font-size: 1.6vh;
+  letter-spacing: 0.25em;
+  color: var(--text-dim);
+  margin-bottom: 0.4vh;
+}
+
+.sp-fact span { font-size: 2.9vh; color: var(--text); }
+
+.sp-photo {
+  max-height: 32vh;
+  max-width: 100%;
+  border-radius: 1vh;
+  object-fit: cover;
+  border: 1px solid #1c2530;
+}
+
+.sp-map svg {
+  height: 58vh;
+  width: 58vh;
+  display: block;
+}
+
+/* Make vertical room when extra overhead flights are shown below */
+.spotlight:has(.sp-others:not(:empty)) .sp-map svg {
+  height: 48vh;
+  width: 48vh;
+}
+
+.spotlight:has(.sp-others:not(:empty)) .sp-photo { max-height: 22vh; }
+
+.map-ring { fill: none; stroke: #1c2530; stroke-width: 0.7; }
+.map-grid { stroke: #141b25; stroke-width: 0.5; }
+.map-home { fill: var(--amber); }
+.map-plane { fill: var(--green); }
+.map-plane-other { fill: var(--text-dim); opacity: 0.8; }
+
+/* Additional overhead flights (or nearest area traffic when the ring is
+   otherwise empty), squeezed in below the spotlight */
+.sp-others {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1vh 1.5vw;
+  overflow: hidden;
+}
+
+.sp-others:not(:empty) { padding-top: 1.5vh; border-top: 1px solid #1c2530; }
+
+.sp-others-hdr {
+  flex-basis: 100%;
+  font-size: 1.7vh;
+  letter-spacing: 0.25em;
+  color: var(--text-dim);
+}
+
+.sp-other {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 30vw;
+  background: var(--panel);
+  border-left: 0.5vh solid var(--amber-dim);
+  border-radius: 0.6vh;
+  padding: 1.2vh 1.2vw;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4vh;
+}
+
+.sp-other > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-other-cs {
+  font-size: 2.8vh;
+  font-weight: 700;
+  color: var(--amber);
+  letter-spacing: 0.06em;
+}
+
+.sp-other-route { font-size: 2.2vh; color: var(--text); }
+.sp-other-route .arrow { color: var(--text-dim); }
+.sp-other-sub { font-size: 1.7vh; color: var(--text-dim); }
+.map-label { fill: var(--text-dim); font-size: 4.5px; font-family: var(--mono); letter-spacing: 0.1em; }
+
+/* ---------- board view ---------- */
+.board-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: 1.5vh;
+}
+
+#board-direction {
+  font-size: 3.2vh;
+  letter-spacing: 0.3em;
+  color: var(--amber);
+  font-weight: 700;
+}
+
+#board-airport { font-size: 2.2vh; color: var(--text-dim); letter-spacing: 0.15em; }
+
+.board-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.board-table th {
+  text-align: left;
+  font-size: 1.9vh;
+  color: var(--text-dim);
+  letter-spacing: 0.2em;
+  padding: 0.8vh 1vw;
+  border-bottom: 1px solid #1c2530;
+}
+
+.board-table td {
+  font-size: 3vh;
+  padding: 1.15vh 1vw;
+  color: var(--amber);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid #141b25;
+}
+
+.col-time { width: 19%; }
+.col-flight { width: 13%; }
+.col-city { width: 38%; }
+.col-gate { width: 10%; }
+.col-status { width: 20%; }
+
+td.status-ontime   { color: var(--green); }
+td.status-delayed  { color: var(--red); }
+td.status-boarding { color: var(--green); animation: blink 1.2s step-end infinite; }
+td.status-landed   { color: var(--text-dim); }
+
+@keyframes blink { 50% { opacity: 0.35; } }
+
+td .est {
+  color: var(--red);
+  font-size: 2.1vh;
+  margin-left: 0.3vw;
+}
+
+td.board-note {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 2.2vh;
+  letter-spacing: 0.2em;
+  padding: 6vh 0;
+}
+
+/* ---------- emergency (squawk 7500/7600/7700) takeover ---------- */
+#emergency-view { display: flex; flex-direction: column; gap: 1.5vh; }
+#emergency-view.hidden { display: none; }
+
+#em-banner {
+  background: var(--red);
+  color: var(--bg);
+  font-weight: 700;
+  font-size: 3.2vh;
+  letter-spacing: 0.15em;
+  text-align: center;
+  padding: 1.2vh 0;
+  border-radius: 6px;
+  animation: em-blink 1.6s step-end infinite;
+}
+@keyframes em-blink { 50% { filter: brightness(0.72); } }
+
+.em-body {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 2vw;
+  flex: 1;
+  min-height: 0;
+}
+
+#em-info .em-airline { color: var(--text-dim); font-size: 2.4vh; letter-spacing: 0.1em; }
+#em-info .em-callsign {
+  color: var(--red);
+  font-size: 9vh;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+}
+#em-info .em-route { font-size: 3.6vh; color: var(--text); margin-bottom: 2vh; }
+
+#em-map {
+  border: 1px solid var(--panel);
+  border-radius: 8px;
+  min-height: 40vh;
+  background: var(--panel);
+}
+.em-plane-icon svg { display: block; }
+
+/* ---------- view-location panel ---------- */
+#loc-btn {
+  background: none; border: 1px solid #444; color: #9aa0a6;
+  border-radius: 4px; cursor: pointer; margin-left: 10px; font-size: 1rem;
+  line-height: 1.1; padding: 0 6px;
+}
+#loc-panel {
+  position: fixed; right: 12px; bottom: 52px; z-index: 1000; width: 250px;
+  background: #14181f; border: 1px solid #333; border-radius: 8px;
+  padding: 14px 16px; box-shadow: 0 8px 24px rgba(0,0,0,.6);
+}
+#loc-panel h3 { margin: 0 0 4px; color: #ffb000; font-size: .85rem; letter-spacing: .06em; }
+#loc-panel label { display: block; margin-top: 10px; font-size: .72rem; color: #9aa0a6; }
+#loc-panel input {
+  width: 100%; box-sizing: border-box; margin-top: 3px; padding: 6px;
+  background: #0b0e14; color: #e8e8e8; border: 1px solid #333; border-radius: 4px;
+}
+#loc-panel button {
+  margin-top: 10px; padding: 6px 12px; border: 0; border-radius: 4px;
+  background: #ffb000; color: #000; font-weight: 600; cursor: pointer;
+}
+#loc-panel #loc-clear { background: #333; color: #e8e8e8; }
+.loc-row { display: flex; gap: 8px; }
+#loc-note { color: #ff6b6b; font-size: .72rem; margin: 8px 0 0; }
+
+/* ---------- first-load spinner (nearby view) ---------- */
+.empty-msg.loading { display: flex; align-items: center; gap: 14px; justify-content: center; }
+.spinner {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 3px solid #333; border-top-color: #ffb000;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

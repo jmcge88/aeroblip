@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+
+# Runtime state: device-token registry and logo cache
+data/
+
+# OTA firmware images (fw/) are tracked: a prod release deploy is then just
+# `git pull` on the server (the compose file mounts fw/ read-only).
+
+# Per-unit provisioning manifest - contains device tokens, never commit
+tools/devices_manifest.csv

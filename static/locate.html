@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Find my coordinates</title>
+  <style>
+    body { margin: 0; padding: 2rem 1.5rem; background: #0b0e14; color: #e8e8e8;
+           font-family: system-ui, sans-serif; text-align: center; }
+    h1 { color: #ffb000; font-size: 1.3rem; letter-spacing: .06em; }
+    p { color: #9aa0a6; max-width: 26rem; margin: .8rem auto; line-height: 1.5; }
+    #coords { font-size: 1.5rem; font-family: ui-monospace, monospace; margin: 1.5rem 0 1rem;
+              min-height: 2rem; word-break: break-all; }
+    button { background: #ffb000; color: #000; border: 0; border-radius: .5rem;
+             padding: .8rem 1.6rem; font-size: 1rem; font-weight: 600; }
+    button:disabled { opacity: .4; }
+    #err { color: #ff6b6b; }
+  </style>
+</head>
+<body>
+  <h1>FLIGHT INFO &mdash; MY LOCATION</h1>
+  <p>Your display needs to know where home is. Tap the button, allow the
+     location prompt, then copy the coordinates into the <b>Location</b> field
+     of the device's WiFi setup page.</p>
+  <button id="go">Get my coordinates</button>
+  <div id="coords"></div>
+  <button id="copy" hidden>Copy</button>
+  <p id="err"></p>
+  <p style="font-size:.85rem">Tip: for best results stand near where the
+     display will live. You can also long-press your house in Google Maps and
+     copy the coordinates it shows.</p>
+  <script>
+    const out = document.getElementById("coords"), err = document.getElementById("err"),
+          copy = document.getElementById("copy"), go = document.getElementById("go");
+    go.onclick = () => {
+      err.textContent = "";
+      if (!("geolocation" in navigator) || !window.isSecureContext) {
+        err.textContent = "Location needs a secure (https) connection - " +
+          "or long-press your house in Google Maps and copy the coordinates.";
+        return;
+      }
+      go.disabled = true;
+      navigator.geolocation.getCurrentPosition(pos => {
+        out.textContent = pos.coords.latitude.toFixed(6) + ", " + pos.coords.longitude.toFixed(6);
+        copy.hidden = false;
+        go.disabled = false;
+      }, e => {
+        err.textContent = "Could not get a location (" + e.message + ").";
+        go.disabled = false;
+      }, { enableHighAccuracy: true, timeout: 15000 });
+    };
+    copy.onclick = async () => {
+      await navigator.clipboard.writeText(out.textContent);
+      copy.textContent = "Copied!";
+      setTimeout(() => copy.textContent = "Copy", 1500);
+    };
+  </script>
+</body>
+</html>
