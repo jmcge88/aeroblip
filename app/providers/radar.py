@@ -34,7 +34,7 @@ PROVIDERS = {
 # "you are doing something wrong", and that an API key obtained by feeding the
 # network will eventually be required. So the contract we can actually honour
 # is behavioural rather than numeric: space calls, and back off properly the
-# moment they push back (see _penalise / _penalty_until below) instead of
+# moment they push back (see penalise / _penalty_until below) instead of
 # retrying into a limit. If you run this at any scale, feed a receiver:
 # https://adsb.lol/feed/
 _MIN_SPACING = {"adsblol": 2.5, "adsbfi": 1.5}
@@ -49,7 +49,10 @@ _penalty_until: dict[str, float] = {}
 _penalty_level: dict[str, int] = {}
 
 
-async def _throttle(name: str) -> None:
+async def throttle(name: str) -> None:
+    """Space calls to `name` globally. Public: any loop in the app that talks
+    to an aggregator (e.g. the squawk watch in services.alerts) must call this
+    so every consumer shares one upstream budget per provider."""
     lock = _throttle_locks.setdefault(name, asyncio.Lock())
     async with lock:
         wait = _last_call.get(name, 0.0) + _MIN_SPACING.get(name, 1.0) - time.monotonic()
@@ -58,11 +61,11 @@ async def _throttle(name: str) -> None:
         _last_call[name] = time.monotonic()
 
 
-def _penalised(name: str) -> bool:
+def penalised(name: str) -> bool:
     return time.monotonic() < _penalty_until.get(name, 0.0)
 
 
-def _penalise(name: str, retry_after: str | None = None) -> None:
+def penalise(name: str, retry_after: str | None = None) -> None:
     """Stand down from an aggregator that returned 429/403.
 
     Honours Retry-After when the server sends a plain seconds value; otherwise
@@ -80,7 +83,7 @@ def _penalise(name: str, retry_after: str | None = None) -> None:
     log.warning("radar provider %s rate-limited us - standing down %ds", name, cooldown)
 
 
-def _clear_penalty(name: str) -> None:
+def clear_penalty(name: str) -> None:
     if name in _penalty_level:
         _penalty_level.pop(name, None)
         _penalty_until.pop(name, None)
@@ -116,17 +119,17 @@ class RadarProvider:
         self._empty_crosscheck_last = 0.0
 
     async def _get_point(self, name: str, lat: float, lon: float, radius_nm: float) -> list[dict]:
-        await _throttle(name)
+        await throttle(name)
         url = self._providers[name].format(lat=f"{lat:.6f}", lon=f"{lon:.6f}",
                                            radius=f"{radius_nm:g}")
         resp = await self._client.get(url, timeout=10)
         # 429 = slow down, 403 = go away (how airplanes.live closed their API).
         # Either way, stop asking for a while instead of retrying every poll.
         if resp.status_code in (403, 429):
-            _penalise(name, resp.headers.get("Retry-After"))
+            penalise(name, resp.headers.get("Retry-After"))
             resp.raise_for_status()
         resp.raise_for_status()
-        _clear_penalty(name)
+        clear_penalty(name)
         return resp.json().get("ac") or []
 
     async def fetch_point(self, lat: float, lon: float, radius_nm: float) -> list[dict]:
@@ -147,7 +150,7 @@ class RadarProvider:
         last_error: Exception | None = None
         empty_from: str | None = None
         for name in order:
-            if _penalised(name):
+            if penalised(name):
                 continue  # still standing down from a 429/403
             if name == self._preferred:
                 self._preferred_last_try = now

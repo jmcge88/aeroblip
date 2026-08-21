@@ -35,7 +35,7 @@ AIRPORT_NAME = os.getenv("AIRPORT_NAME", "Brisbane")
 # Radar (overhead) polling. Product mode ignores this and always uses adsb.lol
 # (adsb.fi's terms are non-commercial).
 ADSB_PROVIDER = os.getenv("ADSB_PROVIDER", "adsblol")  # adsblol | adsbfi
-POLL_SECONDS = float(os.getenv("POLL_SECONDS", "5"))
+POLL_SECONDS = float(os.getenv("POLL_SECONDS", "10"))
 
 # AeroDataBox: airport board only (metadata comes from standing-data)
 AERODATABOX_API_KEY = os.getenv("AERODATABOX_API_KEY", "")
@@ -65,6 +65,11 @@ LOGO_URL_TEMPLATE = os.getenv("LOGO_URL_TEMPLATE", _DEFAULT_LOGO_TEMPLATE)
 LOGO_API_KEY = os.getenv("LOGO_API_KEY", "")
 LOGO_API_KEY_HEADER = os.getenv("LOGO_API_KEY_HEADER", "X-API-Key")
 
+# Space-separated origins allowed to iframe the dashboard (e.g.
+# "http://homeassistant.local:8123 http://192.168.1.54:8123"); empty (default)
+# keeps embedding blocked.
+FRAME_ANCESTORS = os.getenv("FRAME_ANCESTORS", "").strip()
+
 # Device fleet (product mode): per-device tokens provisioned at flash time by
 # tools/flash_product.py. REQUIRE_DEVICE_TOKEN gates the device endpoints;
 # ADMIN_TOKEN protects registration/listing.
@@ -75,10 +80,11 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 DATA_DIR = os.getenv("DATA_DIR", "data")
 FW_DIR = os.getenv("FW_DIR", "fw")
 
-# Devices send their own location/airport as query params; each distinct
-# location gets its own upstream poll loop (idle ones are reaped). This caps
-# concurrent locations so a fleet can't hammer adsb.lol unboundedly - raise it
-# deliberately, alongside POLL_SECONDS, as the fleet grows.
+# Devices send their own location/airport as query params; locations are
+# pooled onto one upstream poll loop per ~5 km grid cell (idle ones are
+# reaped). This caps concurrent cells so a fleet can't hammer adsb.lol
+# unboundedly - raise it deliberately, alongside POLL_SECONDS, as the fleet
+# grows.
 #
 # At the cap, the least-recently-used location with no live websocket client is
 # evicted to make room, rather than refusing the newcomer: an unauthenticated

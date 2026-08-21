@@ -18,6 +18,12 @@ CARDINALS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
 
 ROUTE_RETRY_SECONDS = 3600  # re-attempt unknown routes at most hourly
 
+# Pollers are shared by every client in a ~5 km grid cell (see services.hub),
+# so the upstream query and the enrichment gates are padded beyond what the
+# cell centre alone would need: a client can sit up to ~2 NM off centre, and
+# its area circle and overhead ring shift with it.
+AREA_PAD_NM = 3.0
+
 # Scripted flights for DEMO_MODE: each flies a straight track past home on a
 # repeating cycle. offset_nm is the closest-approach distance, so the first
 # two periodically enter the overhead ring and trigger the spotlight view.
@@ -89,10 +95,20 @@ def haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * r_nm * math.asin(math.sqrt(a))
 
 
+def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Initial great-circle bearing from point 1 to point 2, 0-360."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    x = math.sin(dl) * math.cos(p2)
+    y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+
 class OverheadPoller:
-    """Polls one location. The env config supplies the defaults (the web
-    dashboard's location); device fleets get one poller per distinct location
-    via services.hub, each carrying its own coordinates and radii."""
+    """Polls one location - the centre of a ~5 km grid cell (services.hub
+    snaps client coordinates onto the grid). Every client in the cell shares
+    this poller's upstream requests; each gets its own view of the shared
+    snapshot via snapshot_for(), recomputed from its exact home coordinates."""
 
     def __init__(self, provider: RadarProvider, meta, board_cache=None, *,
                  lat: float | None = None, lon: float | None = None,
@@ -120,7 +136,7 @@ class OverheadPoller:
         self._airline_cache: dict[str, dict | None] = {}
         self._info_cache: dict[str, dict | None] = {}
         self._flyovers: list[float] = []  # start times of demo flyovers
-        self._listeners: set[asyncio.Queue] = set()
+        self._listeners: dict[asyncio.Queue, tuple] = {}  # queue -> view params
 
     def touch(self) -> None:
         self.last_used = time.monotonic()
@@ -130,22 +146,62 @@ class OverheadPoller:
         """True while a websocket client is subscribed (blocks idle-reaping)."""
         return bool(self._listeners)
 
-    def subscribe(self) -> asyncio.Queue:
+    def subscribe(self, lat: float, lon: float, overhead_nm: float,
+                  area_nm: float) -> asyncio.Queue:
+        """Register a websocket client. Every push it receives is rendered for
+        its exact home via snapshot_for(), not the shared poll centre."""
         q: asyncio.Queue = asyncio.Queue(maxsize=4)
-        self._listeners.add(q)
+        self._listeners[q] = (lat, lon, overhead_nm, area_nm)
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
-        self._listeners.discard(q)
+        self._listeners.pop(q, None)
 
     def _notify(self) -> None:
-        for q in self._listeners:
+        for q, view in self._listeners.items():
             if q.full():
                 try:
                     q.get_nowait()
                 except asyncio.QueueEmpty:
                     pass
-            q.put_nowait(self.snapshot)
+            q.put_nowait(self.snapshot_for(*view))
+
+    def request_area(self, area_nm: float) -> None:
+        """Grow the polled area to cover a new client sharing this cell.
+
+        Never shrinks: a poller outlives its last client by minutes at most
+        (idle reaping in services.hub), so briefly over-polling after the
+        big-area client leaves beats tracking per-subscriber maxima.
+        """
+        self._area_nm = max(self._area_nm, area_nm)
+
+    def snapshot_for(self, lat: float, lon: float, overhead_nm: float,
+                     area_nm: float) -> dict:
+        """The shared snapshot recomputed for one client's exact home.
+
+        Distance, bearing, the overhead flag and the sort order are derived
+        from each aircraft's own lat/lon against the client's coordinates;
+        traffic outside the client's area (fetched for the pad, or for a
+        bigger-area neighbour in the same cell) is dropped.
+        """
+        aircraft = []
+        for a in self.snapshot["aircraft"]:
+            if a.get("lat") is None or a.get("lon") is None:
+                continue
+            a = dict(a)
+            dist = round(haversine_nm(lat, lon, a["lat"], a["lon"]), 2)
+            if dist > area_nm:
+                continue
+            a["distance_nm"] = dist
+            a["bearing_from_home"] = round(bearing_deg(lat, lon, a["lat"], a["lon"]), 1)
+            a["overhead"] = dist <= overhead_nm
+            aircraft.append(a)
+        aircraft.sort(key=lambda a: a["distance_nm"])
+        return {**self.snapshot,
+                "aircraft": aircraft,
+                "overhead_count": sum(1 for a in aircraft if a["overhead"]),
+                "overhead_radius_nm": overhead_nm,
+                "area_radius_nm": area_nm}
 
     async def run(self) -> None:
         while True:
@@ -162,7 +218,8 @@ class OverheadPoller:
             aircraft = self._demo_aircraft()
             provider = "demo"
         else:
-            raw = await self._provider.fetch_point(self._lat, self._lon, self._area_nm)
+            raw = await self._provider.fetch_point(self._lat, self._lon,
+                                                   self._area_nm + AREA_PAD_NM)
             aircraft = [self._normalize(ac) for ac in raw]
             aircraft = [a for a in aircraft if a is not None]
             await self._enrich_routes(aircraft)
@@ -435,7 +492,12 @@ class OverheadPoller:
         few that appear as cards in the nearby-traffic view."""
         for i, a in enumerate(aircraft):
             hexcode = a["hex"]
-            if not hexcode or (not a["overhead"] and i >= 6):
+            dist = a["distance_nm"]
+            # Both gates are centre-relative but the clients are not: a home
+            # at the cell edge shifts its overhead ring and its nearest-few
+            # by up to AREA_PAD_NM, so pad the ring and widen 6 to 8.
+            near = dist is not None and dist <= self._overhead_nm + AREA_PAD_NM
+            if not hexcode or (not near and i >= 8):
                 continue
             if hexcode not in self._info_cache:
                 self._info_cache[hexcode] = await self._meta.fetch_aircraft(hexcode)

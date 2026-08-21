@@ -169,7 +169,7 @@ All via `.env` — see [.env.example](.env.example). Key settings:
 | `AREA_RADIUS_NM` | `60` | nearby-traffic radius, list display |
 | `AIRPORT_ICAO` | `YBBN` | board airport |
 | `ADSB_PROVIDER` | `adsblol` | radar source (`adsblol`, `adsbfi`) |
-| `POLL_SECONDS` | `5` | radar poll interval — be kind to the free aggregators |
+| `POLL_SECONDS` | `10` | radar poll interval — be kind to the free aggregators |
 | `AERODATABOX_API_KEY` | *(empty = board shows no data)* | FIDS data key |
 | `BOARD_QUIET_START/END` | `23` / `5` | skip board refreshes overnight |
 | `PRODUCT_MODE` | `false` | hosted/commercial mode: commercially-licensed data sources only |
@@ -178,6 +178,7 @@ All via `.env` — see [.env.example](.env.example). Key settings:
 | `REQUIRE_DEVICE_TOKEN` | `false` | gate data endpoints on provisioned device tokens |
 | `ADMIN_TOKEN` | *(empty = admin disabled)* | protects `/admin` + device registration |
 | `LOGO_URL_TEMPLATE` / `LOGO_API_KEY` | kiwi (personal) / logostream (product) | upstream for the cached `/api/logo/{iata}` |
+| `FRAME_ANCESTORS` | *(empty = embedding blocked)* | space-separated origins allowed to iframe the dashboard, e.g. a Home Assistant dashboard - sent as `Content-Security-Policy: frame-ancestors`, superseding `X-Frame-Options: DENY` |
 
 ## API
 
