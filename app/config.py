@@ -35,7 +35,7 @@ AIRPORT_NAME = os.getenv("AIRPORT_NAME", "Brisbane")
 # Radar (overhead) polling. Product mode ignores this and always uses adsb.lol
 # (adsb.fi's terms are non-commercial).
 ADSB_PROVIDER = os.getenv("ADSB_PROVIDER", "adsblol")  # adsblol | adsbfi
-POLL_SECONDS = float(os.getenv("POLL_SECONDS", "5"))
+POLL_SECONDS = float(os.getenv("POLL_SECONDS", "10"))
 
 # AeroDataBox: airport board only (metadata comes from standing-data)
 AERODATABOX_API_KEY = os.getenv("AERODATABOX_API_KEY", "")
@@ -80,10 +80,11 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 DATA_DIR = os.getenv("DATA_DIR", "data")
 FW_DIR = os.getenv("FW_DIR", "fw")
 
-# Devices send their own location/airport as query params; each distinct
-# location gets its own upstream poll loop (idle ones are reaped). This caps
-# concurrent locations so a fleet can't hammer adsb.lol unboundedly - raise it
-# deliberately, alongside POLL_SECONDS, as the fleet grows.
+# Devices send their own location/airport as query params; locations are
+# pooled onto one upstream poll loop per ~5 km grid cell (idle ones are
+# reaped). This caps concurrent cells so a fleet can't hammer adsb.lol
+# unboundedly - raise it deliberately, alongside POLL_SECONDS, as the fleet
+# grows.
 #
 # At the cap, the least-recently-used location with no live websocket client is
 # evicted to make room, rather than refusing the newcomer: an unauthenticated

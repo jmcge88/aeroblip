@@ -196,7 +196,8 @@ async def health():
 @app.get("/api/overhead", dependencies=[Depends(require_device)])
 async def overhead(request: Request):
     poller = await poller_or_429(request.query_params)
-    return poller.snapshot
+    lat, lon, radius, area, _ = parse_location(request.query_params)
+    return poller.snapshot_for(lat, lon, radius, area)
 
 
 @app.get("/api/board", dependencies=[Depends(require_device)])
@@ -394,7 +395,7 @@ async def ws(websocket: WebSocket):
             return
         devices.touch(token)
     location = parse_location(websocket.query_params)
-    lat, lon, _, _, airport = location
+    lat, lon, radius, area, airport = location
     try:
         poller = await hub.poller_for(*location)
         board = hub.board_for(airport)
@@ -402,11 +403,14 @@ async def ws(websocket: WebSocket):
         await websocket.close(code=4429)
         return
     await websocket.accept()
-    queue = poller.subscribe()
+    # The poller is shared per grid cell; subscribing with this client's exact
+    # home makes every push arrive already rendered for it (snapshot_for).
+    queue = poller.subscribe(lat, lon, radius, area)
     last_board_update = None
     last_alerts_update = None
     try:
-        await websocket.send_json({"type": "overhead", "data": poller.snapshot})
+        await websocket.send_json({"type": "overhead",
+                                   "data": poller.snapshot_for(lat, lon, radius, area)})
         await websocket.send_json({"type": "board", "data": board.snapshot})
         await websocket.send_json({"type": "alerts", "data": alerts.snapshot_for(lat, lon)})
         last_board_update = board.snapshot.get("updated")
