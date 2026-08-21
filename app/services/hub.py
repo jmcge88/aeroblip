@@ -1,9 +1,12 @@
 """On-demand per-location pollers and per-airport boards.
 
 Every sold device carries its own location/airport, so the server runs one
-OverheadPoller per distinct location and one BoardCache per distinct airport.
+OverheadPoller per ~5 km grid cell of client locations and one BoardCache per
+distinct airport. Neighbours land in the same cell and share one upstream
+poll; each still sees geometry computed from its exact home, because the
+poller re-renders the shared snapshot per client (OverheadPoller.snapshot_for).
 Entries are created on first request, kept alive while used, and reaped after
-sitting idle - so upstream load tracks *active* locations, not sold units.
+sitting idle - so upstream load tracks *active* cells, not sold units.
 """
 from __future__ import annotations
 
@@ -20,6 +23,14 @@ from app.services.board_cache import BoardCache
 from app.services.poller import OverheadPoller
 
 log = logging.getLogger(__name__)
+
+# Clients are pooled onto one poller per grid cell of this size (~5.5 km
+# north-south, a little less east-west away from the equator). Snapping means
+# "same cell", not strictly "within 5 km": two homes metres apart can straddle
+# a cell edge and get separate pollers - no worse than the exact keying this
+# replaced. The poller pads its upstream query (poller.AREA_PAD_NM) so an
+# off-centre client's full area circle is still covered by the shared fetch.
+GRID_DEG = 0.05
 
 POLLER_IDLE_SECONDS = 300
 BOARD_IDLE_SECONDS = 3600
@@ -73,8 +84,11 @@ class LocationHub:
 
     async def poller_for(self, lat: float, lon: float, overhead_nm: float,
                          area_nm: float, airport: str | None) -> OverheadPoller:
-        key = (round(lat, 4), round(lon, 4), round(overhead_nm, 1), round(area_nm, 0),
-               airport or "")
+        cell_lat, cell_lon = round(lat / GRID_DEG), round(lon / GRID_DEG)
+        # Radii are deliberately not in the key: overhead is per-client at
+        # render time (snapshot_for), and a bigger-area newcomer grows the
+        # shared poll instead of splitting it (request_area below).
+        key = (cell_lat, cell_lon, airport or "")
         entry = self._pollers.get(key)
         if entry is None:
             if len(self._pollers) >= config.MAX_LOCATIONS and not self._evict_idle_poller():
@@ -82,7 +96,8 @@ class LocationHub:
             board = self.board_for(airport) if airport else None
             poller = OverheadPoller(
                 self._make_radar(), self._meta, board_cache=board,
-                lat=lat, lon=lon, overhead_nm=overhead_nm, area_nm=area_nm,
+                lat=cell_lat * GRID_DEG, lon=cell_lon * GRID_DEG,
+                overhead_nm=overhead_nm, area_nm=area_nm,
                 airport_iata=airport)
             entry = {"poller": poller, "board": airport,
                      "task": asyncio.create_task(poller.run())}
@@ -92,6 +107,7 @@ class LocationHub:
                 await poller.poll_now()
             except Exception:
                 log.exception("initial poll failed for %s", key)
+        entry["poller"].request_area(area_nm)
         entry["poller"].touch()
         return entry["poller"]
 

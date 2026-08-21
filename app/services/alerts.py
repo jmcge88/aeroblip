@@ -14,6 +14,7 @@ import time
 import httpx
 
 from app import config
+from app.providers import radar
 from app.services.poller import cardinal, haversine_nm
 
 log = logging.getLogger(__name__)
@@ -22,8 +23,11 @@ log = logging.getLogger(__name__)
 # with the rest of their public API (16 Aug 2026) and adsb.fi v3 has no global
 # squawk filter (/api/v3/sqk/ returns 400), so the 7700 watch has no fallback:
 # an adsb.lol outage means no global alerts until it returns.
+# (budget name, url): the name keys into app.providers.radar's shared
+# throttle/penalty state, so this loop and the point pollers draw on one
+# upstream budget per aggregator instead of rate-limiting independently.
 SQUAWK_URLS = [
-    "https://api.adsb.lol/v2/squawk/7700",
+    ("adsblol", "https://api.adsb.lol/v2/squawk/7700"),
 ]
 # Product mode takes the commercially-licensed sources only - identical to the
 # list above today, but keeps the split if a non-commercial fallback is added.
@@ -114,11 +118,17 @@ class GlobalAlerts:
 
     async def _poll_once(self) -> None:
         raw = None
-        for url in self._squawk_urls:
+        for name, url in self._squawk_urls:
+            if radar.penalised(name):
+                continue  # aggregator asked us to back off; don't knock again
             try:
+                await radar.throttle(name)
                 resp = await self._client.get(url, timeout=15)
+                if resp.status_code in (403, 429):
+                    radar.penalise(name, resp.headers.get("Retry-After"))
                 resp.raise_for_status()
                 raw = resp.json().get("ac") or []
+                radar.clear_penalty(name)
                 break
             except Exception as exc:
                 log.warning("alerts fetch %s failed: %s", url, exc)
