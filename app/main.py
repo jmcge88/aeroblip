@@ -108,7 +108,13 @@ async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
+    if config.FRAME_ANCESTORS:
+        # CSP frame-ancestors supersedes X-Frame-Options; sending both DENY
+        # and an allowlist would still block, so skip X-Frame-Options here.
+        response.headers.setdefault(
+            "Content-Security-Policy", f"frame-ancestors {config.FRAME_ANCESTORS}")
+    else:
+        response.headers.setdefault("X-Frame-Options", "DENY")
     return response
 
 DEFAULT_LOCATION = (config.HOME_LAT, config.HOME_LON, config.OVERHEAD_RADIUS_NM,

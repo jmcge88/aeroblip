@@ -65,6 +65,11 @@ LOGO_URL_TEMPLATE = os.getenv("LOGO_URL_TEMPLATE", _DEFAULT_LOGO_TEMPLATE)
 LOGO_API_KEY = os.getenv("LOGO_API_KEY", "")
 LOGO_API_KEY_HEADER = os.getenv("LOGO_API_KEY_HEADER", "X-API-Key")
 
+# Space-separated origins allowed to iframe the dashboard (e.g.
+# "http://homeassistant.local:8123 http://192.168.1.54:8123"); empty (default)
+# keeps embedding blocked.
+FRAME_ANCESTORS = os.getenv("FRAME_ANCESTORS", "").strip()
+
 # Device fleet (product mode): per-device tokens provisioned at flash time by
 # tools/flash_product.py. REQUIRE_DEVICE_TOKEN gates the device endpoints;
 # ADMIN_TOKEN protects registration/listing.
