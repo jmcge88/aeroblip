@@ -178,6 +178,7 @@ All via `.env` — see [.env.example](.env.example). Key settings:
 | `REQUIRE_DEVICE_TOKEN` | `false` | gate data endpoints on provisioned device tokens |
 | `ADMIN_TOKEN` | *(empty = admin disabled)* | protects `/admin` + device registration |
 | `LOGO_URL_TEMPLATE` / `LOGO_API_KEY` | kiwi (personal) / logostream (product) | upstream for the cached `/api/logo/{iata}` |
+| `FRAME_ANCESTORS` | *(empty = embedding blocked)* | space-separated origins allowed to iframe the dashboard, e.g. a Home Assistant dashboard - sent as `Content-Security-Policy: frame-ancestors`, superseding `X-Frame-Options: DENY` |
 
 ## API
 
