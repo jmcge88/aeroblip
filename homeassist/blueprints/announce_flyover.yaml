@@ -1,0 +1,66 @@
+blueprint:
+  name: "Aeroblip: Announce flyovers on a speaker"
+  description: >
+    Announces an aircraft over text-to-speech when Aeroblip reports it as
+    about to fly over (or already overhead). Works with any `tts` platform
+    and any `media_player` target.
+  domain: automation
+  author: Aeroblip
+  input:
+    when:
+      name: When to announce
+      description: >-
+        Announce just before the aircraft arrives (uses the ETA event) or
+        only once it is actually overhead.
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - value: aeroblip_flyover_imminent
+              label: "Just before it arrives"
+            - value: aeroblip_flyover
+              label: "When it is overhead"
+      default: aeroblip_flyover_imminent
+    tts_entity:
+      name: Text-to-speech entity
+      description: The `tts` entity used to generate the announcement.
+      selector:
+        entity:
+          domain: tts
+    media_player:
+      name: Speaker
+      description: The media player the announcement is played on.
+      selector:
+        entity:
+          domain: media_player
+    message:
+      name: Announcement message
+      description: >-
+        The text spoken. Templates have access to `trigger.event.data.aircraft`
+        (and `trigger.event.data.eta_s` when triggered by the "imminent"
+        event). The default handles a missing route gracefully.
+      selector:
+        text:
+          multiline: true
+      default: >-
+        {% set aircraft = trigger.event.data.aircraft %}
+        {% set route = aircraft.route %}
+        {% set who = (route.airline if route else none) or (aircraft.airline.airline if aircraft.airline else none) or aircraft.callsign %}
+        {{ who }}, a {{ aircraft.description or aircraft.type }},{% if route %} flying from {{ route.origin_name or route.origin }} to {{ route.destination_name or route.destination }},{% endif %} altitude {{ aircraft.altitude_ft }} feet.
+
+triggers:
+  - trigger: event
+    event_type: !input when
+
+conditions: []
+
+actions:
+  - action: tts.speak
+    target:
+      entity_id: !input tts_entity
+    data:
+      media_player_entity_id: !input media_player
+      message: !input message
+
+mode: single
+max_exceeded: silent
