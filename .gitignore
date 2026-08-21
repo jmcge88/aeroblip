@@ -11,3 +11,6 @@ data/
 
 # Per-unit provisioning manifest - contains device tokens, never commit
 tools/devices_manifest.csv
+
+# Serena (code-analysis tool) local state
+.serena/

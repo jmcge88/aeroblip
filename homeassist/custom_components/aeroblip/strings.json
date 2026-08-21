@@ -1,0 +1,109 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "airport": "Airport code (IATA/ICAO)",
+          "area_nm": "Area radius (NM)",
+          "base_url": "Server URL",
+          "device_token": "Device token (optional)",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "radius_nm": "Overhead radius (NM)"
+        },
+        "data_description": {
+          "airport": "Airport for the arrivals/departures board, e.g. BNE or YBBN",
+          "area_nm": "Aircraft inside this radius are tracked nearby (10–250)",
+          "base_url": "Address of your Aeroblip server, e.g. http://192.168.1.10:8000",
+          "device_token": "Only needed if the server sets REQUIRE_DEVICE_TOKEN",
+          "latitude": "Defaults to your Home Assistant home location",
+          "longitude": "Defaults to your Home Assistant home location",
+          "radius_nm": "Aircraft inside this radius count as overhead (1–30)"
+        },
+        "title": "Connect to Aeroblip"
+      },
+      "reauth_confirm": {
+        "data": {
+          "device_token": "Device token"
+        },
+        "title": "Re-authenticate Aeroblip"
+      }
+    },
+    "abort": {
+      "already_configured": "This server and location is already configured",
+      "reauth_successful": "Re-authentication was successful"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the Aeroblip server",
+      "invalid_auth": "Device token was rejected",
+      "unknown": "Unexpected error"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "flight_overhead": { "name": "Flight overhead" },
+      "emergency_active": { "name": "Emergency active" },
+      "connected": { "name": "Server connection" }
+    },
+    "event": {
+      "flyover": { "name": "Flyover" },
+      "flyover_imminent": { "name": "Flyover imminent" },
+      "emergency": { "name": "Emergency" }
+    },
+    "image": {
+      "nearest_aircraft_photo": { "name": "Nearest aircraft photo" }
+    },
+    "sensor": {
+      "overhead_count": { "name": "Aircraft overhead" },
+      "nearby_count": { "name": "Aircraft nearby" },
+      "nearest_aircraft": { "name": "Nearest aircraft" },
+      "nearest_bearing": { "name": "Nearest aircraft bearing" },
+      "next_flyover": { "name": "Next flyover" },
+      "next_arrival": { "name": "Next arrival" },
+      "next_departure": { "name": "Next departure" },
+      "alert_count": { "name": "Emergency alerts" },
+      "flyovers_today": { "name": "Flyovers today" },
+      "unique_aircraft_today": { "name": "Unique aircraft today" },
+      "busiest_hour": { "name": "Busiest hour today" },
+      "provider": { "name": "Data provider" }
+    }
+  },
+  "services": {
+    "watch_flight": {
+      "name": "Watch a flight",
+      "description": "Track a specific callsign: creates a watch sensor and fires aeroblip_watched_flight events when it appears, comes overhead, or leaves.",
+      "fields": {
+        "callsign": {
+          "name": "Callsign",
+          "description": "ICAO callsign to watch, e.g. QFA551."
+        }
+      }
+    },
+    "unwatch_flight": {
+      "name": "Stop watching a flight",
+      "description": "Remove a flight watch created by watch_flight.",
+      "fields": {
+        "callsign": {
+          "name": "Callsign",
+          "description": "The watched callsign to remove."
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "airport": "Airport code (IATA/ICAO)",
+          "area_nm": "Area radius (NM)",
+          "radius_nm": "Overhead radius (NM)"
+        },
+        "data_description": {
+          "airport": "Airport for the arrivals/departures board, e.g. BNE or YBBN",
+          "area_nm": "Aircraft inside this radius are tracked nearby (10–250)",
+          "radius_nm": "Aircraft inside this radius count as overhead (1–30)"
+        }
+      }
+    }
+  }
+}

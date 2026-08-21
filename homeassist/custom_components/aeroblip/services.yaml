@@ -1,0 +1,15 @@
+watch_flight:
+  fields:
+    callsign:
+      required: true
+      example: "QFA551"
+      selector:
+        text:
+
+unwatch_flight:
+  fields:
+    callsign:
+      required: true
+      example: "QFA551"
+      selector:
+        text:

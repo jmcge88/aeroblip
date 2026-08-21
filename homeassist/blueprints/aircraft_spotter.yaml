@@ -1,0 +1,85 @@
+blueprint:
+  name: "Aeroblip: Notify when a matching aircraft flies over"
+  description: >
+    Watches Aeroblip flyover events and runs your action sequence only when
+    the aircraft matches a field you choose - airline, aircraft type, or
+    callsign prefix. Useful for "tell me when a 747 goes over" or "tell me
+    when a Qantas flight goes over" style automations.
+  domain: automation
+  author: Aeroblip
+  input:
+    match_field:
+      name: Field to match on
+      description: Which aircraft field to compare against the value below.
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - value: airline_iata
+              label: "Airline (IATA code)"
+            - value: type
+              label: "Aircraft type (ICAO)"
+            - value: callsign
+              label: "Callsign prefix"
+      default: airline_iata
+    match_value:
+      name: Value to match
+      description: >-
+        The value to compare against, e.g. `QF` for airline IATA, `B738` for
+        aircraft type, or `QFA` for a callsign prefix. Matching is
+        case-insensitive.
+      selector:
+        text: {}
+    when:
+      name: When to trigger
+      description: >-
+        Trigger just before the aircraft arrives (uses the ETA event) or
+        only once it is actually overhead.
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - value: aeroblip_flyover_imminent
+              label: "Just before it arrives"
+            - value: aeroblip_flyover
+              label: "When it is overhead"
+      default: aeroblip_flyover_imminent
+    actions:
+      name: Actions
+      description: Run when a matching aircraft is detected.
+      selector:
+        action: {}
+
+variables:
+  match_field: !input match_field
+  match_value: !input match_value
+
+triggers:
+  - trigger: event
+    event_type: !input when
+
+conditions:
+  - condition: template
+    value_template: >-
+      {% set aircraft = trigger.event.data.aircraft %}
+      {% set route = aircraft.get('route') or {} %}
+      {% set airline_info = aircraft.get('airline') or {} %}
+      {% set mv = (match_value or '') | lower %}
+      {{
+        (match_field == 'airline_iata'
+          and ((route.get('airline_iata') or airline_info.get('airline_iata') or '') | lower) == mv)
+        or (match_field == 'type'
+          and ((aircraft.get('type') or '') | lower) == mv)
+        or (match_field == 'callsign'
+          and ((aircraft.get('callsign') or '') | lower).startswith(mv))
+      }}
+
+actions:
+  - variables:
+      aircraft: "{{ trigger.event.data.aircraft }}"
+  # sequence: wraps the input's action list - a bare `- !input` would nest a
+  # list inside the actions list, which the script schema rejects.
+  - sequence: !input actions
+
+mode: queued
+max: 10

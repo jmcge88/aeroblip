@@ -1,0 +1,58 @@
+blueprint:
+  name: "Aeroblip: Emergency (squawk 7700) alert"
+  description: >
+    Runs your own notification actions whenever Aeroblip reports a new
+    worldwide squawk-7700 emergency, and optionally flashes a light.
+
+    Your notify actions can template `callsign`, `place` and `distance_nm` —
+    these are exposed as automation variables (built from
+    `trigger.event.data.aircraft`) so you don't have to pull them out of the
+    trigger yourself, e.g. `{{ callsign }}` or `{{ place }}`.
+  domain: automation
+  author: Aeroblip
+  input:
+    notify_action:
+      name: Notification actions
+      description: >-
+        The action(s) to run for the alert, e.g. a mobile app notification
+        or a TTS announcement. Leave empty to skip notifying and only use
+        the light below.
+      selector:
+        action: {}
+      default: []
+    flash_light:
+      name: Light to flash (optional)
+      description: If set, this light is flashed when an emergency is reported.
+      selector:
+        entity:
+          domain: light
+      default: ""
+
+variables:
+  callsign: "{{ trigger.event.data.aircraft.callsign }}"
+  place: "{{ trigger.event.data.aircraft.place }}"
+  distance_nm: "{{ trigger.event.data.aircraft.distance_nm }}"
+  flash_light_entity: !input flash_light
+
+triggers:
+  - trigger: event
+    event_type: aeroblip_emergency
+
+conditions: []
+
+actions:
+  # sequence: wraps the input's action list - a bare `- !input` would nest a
+  # list inside the actions list, which the script schema rejects.
+  - sequence: !input notify_action
+  - if:
+      - condition: template
+        value_template: "{{ flash_light_entity not in [none, '', []] }}"
+    then:
+      - action: light.turn_on
+        target:
+          entity_id: "{{ flash_light_entity }}"
+        data:
+          flash: long
+
+mode: queued
+max: 10
