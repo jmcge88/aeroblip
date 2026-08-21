@@ -1,0 +1,213 @@
+# Aeroblip flight-radar dashboard.
+#
+# Entity ids below assume the integration was set up with airport BNE
+# (device "Aeroblip (BNE)" -> aeroblip_bne_*). If yours differs, replace
+# the _bne_ segment to match your entity ids.
+#
+# Use as a YAML-mode dashboard (configuration.yaml):
+#   lovelace:
+#     dashboards:
+#       aeroblip-radar:
+#         mode: yaml
+#         title: Aeroblip
+#         icon: mdi:radar
+#         filename: dashboards/aeroblip.yaml
+#         show_in_sidebar: true
+# ...or paste the views: block into any dashboard's raw configuration editor.
+title: Aeroblip
+views:
+  - title: Flight Radar
+    path: radar
+    icon: mdi:radar
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Live radar
+            icon: mdi:radar
+          - type: map
+            geo_location_sources:
+              # focus: false keeps distant planes from being fitted into the
+              # initial viewport - the map loads framed on home at
+              # default_zoom instead of zooming out to include every marker.
+              - source: aeroblip
+                focus: false
+            entities:
+              - entity: zone.home
+                focus: true
+            default_zoom: 11
+            cluster: false
+            # Draw a trail behind each plane (last hour of positions)
+            hours_to_show: 1
+            grid_options:
+              columns: full
+              rows: 8
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Right now
+            icon: mdi:airplane
+          - type: tile
+            entity: binary_sensor.aeroblip_bne_flight_overhead
+            color: red
+          - type: tile
+            entity: sensor.aeroblip_bne_aircraft_overhead
+          - type: tile
+            entity: sensor.aeroblip_bne_aircraft_nearby
+          - type: tile
+            entity: sensor.aeroblip_bne_nearest_aircraft
+          - type: tile
+            entity: sensor.aeroblip_bne_next_flyover
+            icon: mdi:airplane-clock
+          - type: tile
+            entity: sensor.aeroblip_bne_nearest_bearing
+          - type: picture-entity
+            entity: image.aeroblip_bne_nearest_aircraft_photo
+            show_state: false
+            show_name: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.aeroblip_bne_flight_overhead
+                state: "on"
+            card:
+              type: markdown
+              title: ✈️ Overhead now
+              content: >-
+                {% set a = 'sensor.aeroblip_bne_nearest_aircraft' %}
+
+                ## {{ states(a) }} — {{ state_attr(a, 'airline') or 'airline unknown' }}
+
+                **{{ state_attr(a, 'origin_name') or state_attr(a, 'origin') or '?' }}
+                → {{ state_attr(a, 'destination_name') or state_attr(a, 'destination') or '?' }}**
+
+                {{ state_attr(a, 'description') or state_attr(a, 'aircraft_type') or 'Type unknown' }}
+                ({{ state_attr(a, 'registration') or 'rego unknown' }})
+
+                - Altitude: **{{ state_attr(a, 'altitude_ft') or '?' }} ft**
+                  ({{ state_attr(a, 'phase') or 'level' }})
+                - Speed: **{{ state_attr(a, 'ground_speed_kt') or '?' }} kt**,
+                  heading {{ state_attr(a, 'heading_cardinal') or '?' }}
+                - Distance: **{{ state_attr(a, 'distance_nm') or '?' }} NM**
+                  at bearing {{ state_attr(a, 'bearing_from_home') or '?' }}°
+
+                {% if state_attr(a, 'photo') %}![aircraft]({{ state_attr(a, 'photo') }}){% endif %}
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Airport board
+            icon: mdi:airport
+          - type: tile
+            entity: sensor.aeroblip_bne_next_arrival
+            icon: mdi:airplane-landing
+          - type: markdown
+            content: >-
+              {% set s = 'sensor.aeroblip_bne_next_arrival' %}
+              {% if states(s) not in ['unknown', 'unavailable'] %}
+              **{{ states(s) }}** · {{ state_attr(s, 'airline') }} from
+              **{{ state_attr(s, 'city') }}** ({{ state_attr(s, 'code') }})
+
+              Scheduled **{{ (state_attr(s, 'scheduled') or '')[11:16] }}**
+              {%- if state_attr(s, 'estimated') %},
+              estimated **{{ (state_attr(s, 'estimated'))[11:16] }}**{% endif %}
+              · {{ state_attr(s, 'status') or '' }}
+
+              Terminal {{ state_attr(s, 'terminal') or '—' }},
+              gate {{ state_attr(s, 'gate') or '—' }}
+              · {{ state_attr(s, 'aircraft_type') or '' }}
+              {% else %}No upcoming arrivals on the board.{% endif %}
+          - type: tile
+            entity: sensor.aeroblip_bne_next_departure
+            icon: mdi:airplane-takeoff
+          - type: markdown
+            content: >-
+              {% set s = 'sensor.aeroblip_bne_next_departure' %}
+              {% if states(s) not in ['unknown', 'unavailable'] %}
+              **{{ states(s) }}** · {{ state_attr(s, 'airline') }} to
+              **{{ state_attr(s, 'city') }}** ({{ state_attr(s, 'code') }})
+
+              Scheduled **{{ (state_attr(s, 'scheduled') or '')[11:16] }}**
+              {%- if state_attr(s, 'estimated') %},
+              estimated **{{ (state_attr(s, 'estimated'))[11:16] }}**{% endif %}
+              · {{ state_attr(s, 'status') or '' }}
+
+              Terminal {{ state_attr(s, 'terminal') or '—' }},
+              gate {{ state_attr(s, 'gate') or '—' }}
+              · {{ state_attr(s, 'aircraft_type') or '' }}
+              {% else %}No upcoming departures on the board.{% endif %}
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Emergencies (squawk 7700)
+            icon: mdi:alert
+          - type: tile
+            entity: sensor.aeroblip_bne_emergency_alerts
+            color: red
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.aeroblip_bne_emergency_active
+                state: "on"
+            card:
+              # Every 7700 aircraft worldwide is its own marker in this
+              # source; the map auto-fits to wherever they are.
+              type: map
+              geo_location_sources:
+                - aeroblip_emergency
+              cluster: false
+              hours_to_show: 2
+              # The card can mount before the first marker exists (both react
+              # to the same alerts frame); auto_fit re-frames the viewport on
+              # every update so the emergency is always in view.
+              auto_fit: true
+              grid_options:
+                columns: full
+                rows: 6
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.aeroblip_bne_emergency_active
+                state: "on"
+            card:
+              type: markdown
+              title: 🚨 Active emergencies
+              content: >-
+                {% for al in state_attr('sensor.aeroblip_bne_emergency_alerts', 'alerts') or [] %}
+                - **{{ al.callsign or al.registration or 'unknown' }}**
+                  ({{ al.type or '?' }}) — {{ al.place or 'position unknown' }},
+                  {{ al.distance_nm or '?' }} NM away, squawk {{ al.squawk }}
+                {% endfor %}
+
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Spotting stats
+            icon: mdi:chart-line
+          - type: tile
+            entity: sensor.aeroblip_bne_flyovers_today
+          - type: tile
+            entity: sensor.aeroblip_bne_unique_aircraft_today
+          - type: tile
+            entity: sensor.aeroblip_bne_busiest_hour_today
+          - type: history-graph
+            hours_to_show: 24
+            entities:
+              - entity: sensor.aeroblip_bne_aircraft_nearby
+              - entity: sensor.aeroblip_bne_aircraft_overhead
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: System
+            icon: mdi:server
+          - type: tile
+            entity: binary_sensor.aeroblip_bne_server_connection
+          - type: tile
+            entity: sensor.aeroblip_bne_data_provider
