@@ -80,8 +80,9 @@ async def lifespan(app: FastAPI):
         elif not config.AERODATABOX_API_KEY:
             log.warning("AERODATABOX_API_KEY not set - airport board will be empty "
                         "(set DEMO_MODE=true for fake data)")
-        # Pre-start the default (env-configured) location for the web dashboard
-        await hub.poller_for(*DEFAULT_LOCATION)
+        # The default (env-configured) location is NOT pre-started: every idle
+        # poller costs real adsb.lol budget, and dashboards/devices create it
+        # on demand via poller_for anyway (see the 429s this used to cause).
         tasks = [asyncio.create_task(alerts.run()), asyncio.create_task(hub.reaper()),
                  asyncio.create_task(standing.run())]
         try:

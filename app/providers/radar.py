@@ -37,7 +37,7 @@ PROVIDERS = {
 # moment they push back (see penalise / _penalty_until below) instead of
 # retrying into a limit. If you run this at any scale, feed a receiver:
 # https://adsb.lol/feed/
-_MIN_SPACING = {"adsblol": 2.5, "adsbfi": 1.5}
+_MIN_SPACING = {"adsblol": 10.0, "adsbfi": 1.5}
 _last_call: dict[str, float] = {}
 _throttle_locks: dict[str, asyncio.Lock] = {}
 
