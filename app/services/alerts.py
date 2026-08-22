@@ -159,6 +159,7 @@ class GlobalAlerts:
         dist = None
         if lat is not None and lon is not None:
             dist = round(haversine_nm(config.HOME_LAT, config.HOME_LON, lat, lon), 1)
+        rate = ac.get("baro_rate", ac.get("geom_rate"))
         track = ac.get("track", ac.get("true_heading"))
         callsign = (ac.get("flight") or "").strip() or None
         return {
@@ -173,6 +174,8 @@ class GlobalAlerts:
             "ground_speed_kt": ac.get("gs"),
             "track": track,
             "heading_cardinal": cardinal(track),
+            "vertical_rate_fpm": rate if isinstance(rate, (int, float)) else None,
+            "pos_age_s": ac.get("seen_pos") if isinstance(ac.get("seen_pos"), (int, float)) else None,
             "squawk": ac.get("squawk") or "7700",
             "emergency": ac.get("emergency"),
             "distance_nm": dist,

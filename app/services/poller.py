@@ -345,6 +345,9 @@ class OverheadPoller:
             "heading_cardinal": cardinal(track),
             "vertical_rate_fpm": rate if isinstance(rate, (int, float)) else None,
             "phase": phase,
+            # seconds since this position fix (adsb.lol seen_pos) - clients
+            # dead-reckon forward from poll time + this age
+            "pos_age_s": ac.get("seen_pos") if isinstance(ac.get("seen_pos"), (int, float)) else None,
             "distance_nm": dist,
             "bearing_from_home": ac.get("dir"),
             "squawk": ac.get("squawk"),

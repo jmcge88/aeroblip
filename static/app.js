@@ -9,6 +9,9 @@ const ALERT_ALTERNATE_MS = 15_000;  // 7700 + overhead both active: alternate vi
 const GLOBAL_ALERT_TAKEOVER_MS = 120_000; // far-away 7700 pins this long, then joins rotation
 const MAX_CARDS = 5;                // aircraft cards that fit on screen
 const MAX_BOARD_ROWS = 14;
+const MAX_EXTRAP_S = 45;            // dead-reckon overhead traffic at most this long
+                                    // (~1.5x POLL_SECONDS: covers polls up to 30s)
+const ALERT_EXTRAP_S = 90;          // 7700 watch polls every 60s: allow one missed poll
 
 const els = {
   viewTitle: document.getElementById("view-title"),
@@ -32,14 +35,60 @@ const els = {
   flipCount: document.getElementById("flip-count"),
 };
 
-let overhead = { aircraft: [], overhead_count: 0 };
+let overheadRaw = { aircraft: [], overhead_count: 0 }; // as received from the server
+let overhead = overheadRaw;   // dead-reckoned view, rebuilt from raw each render
 let board = { arrivals: [], departures: [] };
-let alerts = { aircraft: [] }; // global squawk-7700 watch (worldwide)
+let alertsRaw = { aircraft: [] }; // global squawk-7700 watch (worldwide)
+let alerts = alertsRaw;
 let overheadLoaded = false;   // first payload received: empty now means CLEAR SKIES
 let accessDenied = false;     // server 403'd us (REQUIRE_DEVICE_TOKEN without a token)
 let lastTraffic = 0;          // timestamp of last non-empty radar snapshot
 let lastOverhead = 0;         // timestamp of last aircraft inside the overhead ring
 let spotlightHex = null;      // sticky spotlight: don't flip between overhead planes
+
+/* Dead reckoning between polls: project each aircraft along its last known
+   track at its last known ground speed, and tick altitude by its climb rate,
+   so the 1 Hz render loop shows motion instead of a frozen 10-20 s snapshot.
+   Positions from adsb.lol are already pos_age_s seconds old at poll time, so
+   this is on average *more* accurate than drawing the raw fix - the only
+   time it's wrong is mid-turn (a few hundred metres worst case at approach
+   speeds), and every real poll snaps it back. Capped so a dropped websocket
+   or a provider stand-down doesn't ghost-glide planes off the map. */
+function extrapolate(a, updated, maxAgeS, ringNm) {
+  if (!updated || a.lat == null || a.lon == null) return a;
+  const age = Math.min(Math.max(Date.now() / 1000 - updated + (a.pos_age_s || 0), 0), maxAgeS);
+  if (age < 0.5) return a;
+  const out = { ...a };
+  if (a.ground_speed_kt > 50 && a.track != null) {
+    const dNm = a.ground_speed_kt * age / 3600;
+    const rad = (a.track * Math.PI) / 180;
+    out.lat = a.lat + (dNm * Math.cos(rad)) / 60;
+    out.lon = a.lon + (dNm * Math.sin(rad)) / (60 * Math.cos((a.lat * Math.PI) / 180));
+    if (a.distance_nm != null && a.bearing_from_home != null) {
+      // Move the home->aircraft vector in NM (flat earth is fine at <100 NM)
+      const brg = (a.bearing_from_home * Math.PI) / 180;
+      const x = a.distance_nm * Math.sin(brg) + dNm * Math.sin(rad);
+      const y = a.distance_nm * Math.cos(brg) + dNm * Math.cos(rad);
+      out.distance_nm = Math.hypot(x, y);
+      out.bearing_from_home = ((Math.atan2(x, y) * 180) / Math.PI + 360) % 360;
+      if (ringNm != null) out.overhead = out.distance_nm <= ringNm;
+    }
+  }
+  if (a.altitude_ft != null && a.vertical_rate_fpm != null)
+    out.altitude_ft = Math.max(0, a.altitude_ft + (a.vertical_rate_fpm * age) / 60);
+  return out;
+}
+
+function liveSnapshot(raw, maxAgeS) {
+  if (!raw.aircraft?.length) return raw;
+  const aircraft = raw.aircraft.map((a) =>
+    extrapolate(a, raw.updated, maxAgeS, raw.overhead_radius_nm));
+  aircraft.sort((p, q) => (p.distance_nm ?? 9e9) - (q.distance_nm ?? 9e9));
+  const out = { ...raw, aircraft };
+  if ("overhead_count" in raw)
+    out.overhead_count = aircraft.filter((a) => a.overhead).length;
+  return out;
+}
 
 /* Only touch the DOM when content actually changed - innerHTML rewrites
    re-create <img> tags and replay animations, which reads as flicker. */
@@ -144,17 +193,17 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "overhead") {
-      overhead = msg.data;
+      overheadRaw = msg.data;
       overheadLoaded = true;
-      if (overhead.aircraft.length > 0) lastTraffic = Date.now();
-      if (overhead.overhead_count > 0) lastOverhead = Date.now();
+      if (msg.data.aircraft.length > 0) lastTraffic = Date.now();
+      if (msg.data.overhead_count > 0) lastOverhead = Date.now();
       render();
     } else if (msg.type === "board") {
       board = msg.data;
       els.mockBadge.classList.toggle("hidden", !board.mock);
       render();
     } else if (msg.type === "alerts") {
-      alerts = msg.data;
+      alertsRaw = msg.data;
       render();
     }
   };
@@ -348,6 +397,10 @@ els.emBtn.addEventListener("click", () => {
 
 /* ---------- rendering ---------- */
 function render() {
+  // Rebuild the dead-reckoned views from the raw snapshots every tick - the
+  // 1 Hz interval below is what makes the pages look live between polls.
+  overhead = liveSnapshot(overheadRaw, MAX_EXTRAP_S);
+  alerts = liveSnapshot(alertsRaw, ALERT_EXTRAP_S);
   let page, flipIn = null;
   if (["spotlight", "nearby", "board", "emergency"].includes(FORCED_VIEW)) {
     page = { spotlight: "air", nearby: "nearby", board: "departures", emergency: "emergency" }[FORCED_VIEW];
@@ -527,8 +580,9 @@ function etaToOverhead(a) {
   if (along <= 0 || cross > ringNm) return null;            // flying away, or will miss
   const toRing = along - Math.sqrt(ringNm * ringNm - cross * cross);
   if (toRing <= 0) return null;
-  let secs = toRing / (a.ground_speed_kt / 3600);
-  if (overhead.updated) secs -= Math.max(0, Date.now() / 1000 - overhead.updated);
+  // No staleness correction here: position/distance are already dead-reckoned
+  // to "now" by extrapolate(), so the raw ETA is current.
+  const secs = toRing / (a.ground_speed_kt / 3600);
   return secs > 2 && secs < 900 ? secs : null;              // only if under 15 min
 }
 
