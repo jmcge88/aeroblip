@@ -44,9 +44,9 @@ bool aircraftAlert(const Aircraft &a);
 #define MAX_WATCH_EVENTS 4
 struct WatchEvent {
   char id[14];
-  char kind[12];   // "type"|"airline"|...|"circling"|"squawk"|"new_type"
+  char kind[16];   // "type"|"airline"|"registration"|...|"circling"|"squawk"|"new_type"
   char title[44];
-  char message[72];
+  char message[96];
 };
 
 struct OverheadData {
@@ -98,6 +98,44 @@ struct AlertsData {
   uint32_t fetched_ms;
 };
 
+// Follow-a-flight (server-side trackers; the device only displays them).
+// Arrives on the ws "follow" frame, or from /api/follow when polling.
+#define MAX_FOLLOWS_SHOWN 3
+struct FollowFlight {
+  Aircraft ac;          // position/route/identity, same parser as overhead
+  char status[14];      // waiting | live | no_coverage | landed
+  float progress_pct;   // NAN when the route geometry is unknown
+  int eta_s;            // -1 when unknown
+  uint32_t eta_utc;     // 0 when unknown
+  float dist_to_dest_nm;
+};
+struct FollowData {
+  FollowFlight flights[MAX_FOLLOWS_SHOWN];
+  int count;
+  bool valid;
+  uint32_t fetched_ms;
+};
+
+// Airport weather strip for the board screens (/api/wx, cached server-side)
+struct WxData {
+  char icao[6];
+  char line[44]; // pre-formatted summary: "140/07KT  22/13C  Q1024  FEW035"
+  bool valid;
+  uint32_t fetched_ms;
+};
+
+// Next naked-eye ISS pass (/api/sky), shown on the quiet/ALL QUIET screens
+struct SkyData {
+  bool has_pass;
+  uint32_t pass_start; // epoch
+  uint32_t pass_end;
+  int max_el;
+  char start_dir[4];
+  char end_dir[4];
+  bool valid;
+  uint32_t fetched_ms;
+};
+
 struct AppConfig {
   float overhead_radius_nm = 5.0f;
   float area_radius_nm = 60.0f;
@@ -123,16 +161,19 @@ bool fetchConfig(AppConfig &out);
 bool fetchOverhead(OverheadData &out);
 bool fetchBoard(BoardData &out);
 bool fetchAlerts(AlertsData &out);
+bool fetchFollow(FollowData &out);
+bool fetchWx(WxData &out);
+bool fetchSky(SkyData &out);
 
 // Owner-opt-in photo lookup, straight from the device to adsbdb (which serves
 // planespotters.net thumbnails). Product servers never handle photo data -
 // the personal-use opt-in and the traffic are the owner's own.
 bool lookupPhotoUrl(const char *hex, char *out, size_t outLen);
 
-// Parse one /ws frame ({"type":"overhead"|"board"|"alerts","data":{...}}).
-// Returns 1 if oh was filled, 2 if bd was filled, 3 if al was filled, 0 otherwise.
+// Parse one /ws frame ({"type":"overhead"|"board"|"alerts"|"follow","data":{...}}).
+// Returns 1 if oh was filled, 2 for bd, 3 for al, 4 for fl, 0 otherwise.
 int handleWsMessage(const uint8_t *payload, size_t len, OverheadData &oh, BoardData &bd,
-                    AlertsData &al);
+                    AlertsData &al, FollowData &fl);
 
 // Seconds until the aircraft enters the overhead ring, or -1 if it won't.
 // Port of etaToOverhead() in static/app.js.

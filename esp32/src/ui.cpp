@@ -131,8 +131,11 @@ static void drawNearbyRow(Arduino_GFX *g, const Aircraft &n, int y) {
   snprintf(buf, sizeof(buf), "%s", n.callsign[0] ? n.callsign : (n.registration[0] ? n.registration : "?"));
   upper(buf);
   buf[8] = '\0';
-  text(g, UI_L, y, 2, COL_WHITE, buf);
-  text(g, 128, y, 2, COL_GREY, n.type);
+  text(g, UI_L, y, 2, n.circling ? COL_AMBER : COL_WHITE, buf);
+  // An orbiting aircraft is the most interesting thing in the list - flag it
+  // where the type code normally sits
+  if (n.circling) text(g, 128, y, 2, COL_AMBER, "CIRC");
+  else text(g, 128, y, 2, COL_GREY, n.type);
   if (n.has_route && n.origin[0] && n.destination[0]) {
     char r[10];
     snprintf(r, sizeof(r), "%s>%s", n.origin, n.destination);
@@ -189,7 +192,7 @@ static void drawRadar(Arduino_GFX *g, const OverheadData &oh, int cx, int cy, in
 static void drawNearbyTraffic(Arduino_GFX *g, const OverheadData &oh);
 
 static void drawOverhead(Arduino_GFX *g, const OverheadData &oh, const AppConfig &cfg,
-                         int spotIdx, const PhotoState *photo) {
+                         int spotIdx, const PhotoState *photo, const char *issLine) {
   if (!oh.valid) {
     textCentered(g, 220, 3, COL_GREY, "WAITING FOR DATA...");
     return;
@@ -199,6 +202,8 @@ static void drawOverhead(Arduino_GFX *g, const OverheadData &oh, const AppConfig
     char sub[44];
     snprintf(sub, sizeof(sub), "NO AIRCRAFT WITHIN %d NM", (int)lroundf(oh.area_radius_nm));
     textCentered(g, 250, 2, COL_GREY, sub);
+    // A quiet sky is exactly when an ISS pass is worth advertising
+    if (issLine && issLine[0]) textCentered(g, 296, 2, COL_CYAN, issLine);
     return;
   }
   if (spotIdx < 0 || spotIdx >= oh.count) {
@@ -272,6 +277,10 @@ static void drawOverhead(Arduino_GFX *g, const OverheadData &oh, const AppConfig
   text(g, UI_L, 204, 2, COL_WHITE, line);
   if (a.registration[0]) textRight(g, UI_R, 204, 2, COL_GREY, a.registration);
 
+  // Behaviour/light tags in the free band between the photo and the radar
+  if (a.circling) textRight(g, UI_R, 226, 2, COL_AMBER, "CIRCLING");
+  else if (oh.sun_golden) textRight(g, UI_R, 226, 2, COL_AMBER, "GOLDEN LIGHT");
+
   // Stat stack on the left, big radar on the right
   const char *labels[4] = {"ALT FT", "SPD KT", "DIST NM", "HDG"};
   char v[4][12];
@@ -333,6 +342,8 @@ static void drawNearbyTraffic(Arduino_GFX *g, const OverheadData &oh) {
     int m = (int)eta / 60, s = (int)eta % 60;
     snprintf(e, sizeof(e), "OVERHEAD IN %d:%02d", m, s);
     text(g, UI_L, 192, 2, COL_AMBER, e);
+  } else if (a.circling) {
+    text(g, UI_L, 192, 2, COL_AMBER, "CIRCLING"); // same slot; never both
   }
 
   drawRadar(g, oh, 388, 176, 56, 0);
@@ -368,7 +379,8 @@ static uint16_t statusColor(const char *status, char *shortOut, size_t n) {
   return COL_WHITE;
 }
 
-static void drawBoard(Arduino_GFX *g, const BoardData &bd, bool departures) {
+static void drawBoard(Arduino_GFX *g, const BoardData &bd, bool departures,
+                      const WxData *wx) {
   if (!bd.valid) {
     textCentered(g, 220, 3, COL_GREY, "WAITING FOR DATA...");
     return;
@@ -377,21 +389,30 @@ static void drawBoard(Arduino_GFX *g, const BoardData &bd, bool departures) {
     textCentered(g, 220, 3, COL_RED, "BOARD UNAVAILABLE");
     return;
   }
+  // METAR strip above the table (aviationweather.gov via the server); the
+  // rows shift down one slot to make room
+  int hdrY = 58;
+  bool haveWx = wx && wx->valid && wx->line[0];
+  if (haveWx) {
+    text(g, UI_L + g_jx, 58, 2, COL_GREEN, wx->line);
+    g->drawFastHLine(UI_L - 6, 78, UI_R - UI_L + 12, COL_DIM);
+    hdrY = 86;
+  }
   const BoardRow *rows = departures ? bd.departures : bd.arrivals;
   int n = departures ? bd.n_departures : bd.n_arrivals;
 
   const int xTime = UI_L, xFlight = 100, xCity = 196, xGate = 320, xStatus = 380;
-  text(g, xTime + g_jx, 58, 2, COL_GREY, "TIME");
-  text(g, xFlight + g_jx, 58, 2, COL_GREY, "FLIGHT");
-  text(g, xCity + g_jx, 58, 2, COL_GREY, departures ? "TO" : "FROM");
-  text(g, xGate + g_jx, 58, 2, COL_GREY, "GATE");
-  text(g, xStatus + g_jx, 58, 2, COL_GREY, "STATUS");
+  text(g, xTime + g_jx, hdrY, 2, COL_GREY, "TIME");
+  text(g, xFlight + g_jx, hdrY, 2, COL_GREY, "FLIGHT");
+  text(g, xCity + g_jx, hdrY, 2, COL_GREY, departures ? "TO" : "FROM");
+  text(g, xGate + g_jx, hdrY, 2, COL_GREY, "GATE");
+  text(g, xStatus + g_jx, hdrY, 2, COL_GREY, "STATUS");
 
   if (n == 0) {
     textCentered(g, 220, 3, COL_GREY, departures ? "NO DEPARTURES" : "NO ARRIVALS");
     return;
   }
-  int y = 86;
+  int y = hdrY + 28;
   for (int i = 0; i < n && y <= 396; i++, y += 36) {
     const BoardRow &r = rows[i];
     bool est = r.est_hm[0] != '\0';
@@ -417,7 +438,7 @@ static void drawBoard(Arduino_GFX *g, const BoardData &bd, bool departures) {
 
 /* ---------- sleep screensaver ---------- */
 
-void uiDrawSleep(Arduino_GFX *g) {
+void uiDrawSleep(Arduino_GFX *g, const char *issLine) {
   g->fillScreen(COL_BG);
   struct tm tmNow = {};
   char clk[8] = "--:--";
@@ -428,9 +449,12 @@ void uiDrawSleep(Arduino_GFX *g) {
   }
   // Drift around the safe area, new spot each minute
   int x = 50 + (seed * 37) % 270;
-  int y = 70 + (seed * 53) % 320;
+  int y = 70 + (seed * 53) % 300;
   text(g, x, y, 2, COL_DIM, "NO FLIGHTS");
   text(g, x + 15, y + 26, 2, RGB565(40, 40, 40), clk);
+  // Something IS flying over tonight - the ISS. Faint, drifting with the rest.
+  if (issLine && issLine[0])
+    textCentered(g, y + 56, 2, RGB565(40, 55, 65), issLine);
 }
 
 /* ---------- embedded vector world map ---------- */
@@ -480,6 +504,109 @@ static void drawWorldMap(Arduino_GFX *g, const Aircraft &a, int bx, int by, int 
   } else {
     g->fillCircle(cx, cy, 5, COL_RED);
   }
+}
+
+/* ---------- follow-a-flight ---------- */
+
+static const char *followStatusLabel(const char *s, uint16_t &color) {
+  if (!strcmp(s, "live")) { color = COL_GREEN; return "LIVE"; }
+  if (!strcmp(s, "waiting")) { color = COL_GREY; return "WAITING FOR DATA"; }
+  if (!strcmp(s, "no_coverage")) { color = COL_AMBER; return "NO COVERAGE (LAST FIX)"; }
+  if (!strcmp(s, "landed")) { color = COL_GREY; return "LANDED"; }
+  color = COL_GREY;
+  return s;
+}
+
+// One followed flight fullscreen: status, route, progress bar, ETA, and the
+// embedded world map centred on its position. Follows are managed on the web
+// dashboard; the device is a display.
+static void drawFollow(Arduino_GFX *g, const FollowData &fl, int idx) {
+  if (fl.count == 0) {
+    textCentered(g, 220, 3, COL_GREY, "NO FOLLOWED FLIGHTS");
+    return;
+  }
+  if (idx < 0 || idx >= fl.count) idx = 0;
+  const FollowFlight &f = fl.flights[idx];
+  const Aircraft &a = f.ac;
+
+  uint16_t sc;
+  const char *sl = followStatusLabel(f.status, sc);
+  text(g, UI_L, 58, 2, sc, sl);
+  if (fl.count > 1) {
+    char m[10];
+    snprintf(m, sizeof(m), "%d/%d", idx + 1, fl.count);
+    textRight(g, UI_R, 58, 2, COL_GREY, m);
+  }
+
+  char cs[12];
+  snprintf(cs, sizeof(cs), "%s", a.callsign);
+  upper(cs);
+  text(g, UI_L, 82, 4, COL_AMBER, cs);
+  if (a.airline[0]) {
+    char al[22];
+    snprintf(al, sizeof(al), "%.20s", a.airline);
+    upper(al);
+    textRight(g, UI_R, 92, 2, COL_GREY, al);
+  }
+
+  if (a.has_route && a.origin[0] && a.destination[0]) {
+    char route[16];
+    snprintf(route, sizeof(route), "%s > %s", a.origin, a.destination);
+    text(g, UI_L, 120, 3, COL_CYAN, route);
+    char names[42];
+    snprintf(names, sizeof(names), "%s TO %s", a.origin_name, a.destination_name);
+    upper(names);
+    names[34] = '\0';
+    text(g, UI_L, 150, 2, COL_GREY, names);
+  } else {
+    text(g, UI_L, 120, 3, COL_GREY, "ROUTE UNKNOWN");
+  }
+
+  if (!isnan(f.progress_pct)) {
+    const int bx = UI_L, bw = UI_R - UI_L, by = 176, bh = 14;
+    g->drawRect(bx, by, bw, bh, COL_DIM);
+    int fillw = (int)((bw - 4) * (f.progress_pct / 100.0f));
+    if (fillw > bw - 4) fillw = bw - 4;
+    if (fillw > 0) g->fillRect(bx + 2, by + 2, fillw, bh - 4, COL_GREEN);
+    char p[36];
+    if (!isnan(f.dist_to_dest_nm))
+      snprintf(p, sizeof(p), "%d%%  %d NM TO GO", (int)lroundf(f.progress_pct),
+               (int)lroundf(f.dist_to_dest_nm));
+    else
+      snprintf(p, sizeof(p), "%d%%", (int)lroundf(f.progress_pct));
+    text(g, UI_L, 198, 2, COL_GREY, p);
+  }
+
+  if (f.eta_utc) {
+    struct tm tmEta;
+    time_t t = (time_t)f.eta_utc;
+    localtime_r(&t, &tmEta);
+    char e[36];
+    if (f.eta_s >= 0) {
+      int h = f.eta_s / 3600, m = (f.eta_s % 3600) / 60;
+      if (h > 0)
+        snprintf(e, sizeof(e), "ETA %02d:%02d (%dH %02dM)", tmEta.tm_hour, tmEta.tm_min, h, m);
+      else
+        snprintf(e, sizeof(e), "ETA %02d:%02d (%dM)", tmEta.tm_hour, tmEta.tm_min, m);
+    } else {
+      snprintf(e, sizeof(e), "ETA %02d:%02d", tmEta.tm_hour, tmEta.tm_min);
+    }
+    text(g, UI_L, 222, 3, COL_AMBER, e);
+  }
+
+  const char *labels[3] = {"ALT FT", "SPD KT", "HDG"};
+  char v[3][12];
+  fmtInt(v[0], sizeof(v[0]), a.altitude_ft);
+  fmtInt(v[1], sizeof(v[1]), a.ground_speed_kt);
+  snprintf(v[2], sizeof(v[2]), "%s", a.heading_cardinal[0] ? a.heading_cardinal : "-");
+  int x = UI_L;
+  for (int i = 0; i < 3; i++, x += 140) {
+    text(g, x, 258, 2, COL_GREY, labels[i]);
+    text(g, x, 280, 3, COL_WHITE, v[i]);
+  }
+  if (a.type[0]) textRight(g, UI_R, 258, 2, COL_GREY, a.type);
+
+  drawWorldMap(g, a, UI_L, 314, UI_R - UI_L, 110);
 }
 
 /* ---------- squawk alert (7500/7600/7700) ---------- */
@@ -603,10 +730,23 @@ void uiDrawInfo(Arduino_GFX *g, const DeviceInfo &info) {
 
 /* ---------- top level ---------- */
 
+// Transient banner for a fresh watch-rule match (server-side detection: type/
+// airline/callsign/circling/squawk/first-ever-type) - drawn over whatever
+// page is showing, like the emergency banner but non-blocking.
+static void drawToast(Arduino_GFX *g, const char *msg) {
+  if (!msg || !msg[0]) return;
+  const int h = 34;
+  g->fillRect(UI_L - 6, 434 - h, UI_R - UI_L + 12, h, COL_AMBER);
+  char t[42];
+  snprintf(t, sizeof(t), "%.40s", msg);
+  upper(t);
+  text(g, UI_L, 434 - h + 9, 2, RGB565_BLACK, t);
+}
+
 void uiDraw(Arduino_GFX *g, int view, const OverheadData &oh, const BoardData &bd,
             const AppConfig &cfg, bool wifiOk, int spotIdx, int emIdx,
             const Aircraft *galert, int pageCount, int pageIdx, int flipInSec,
-            const PhotoState *photo) {
+            const PhotoState *photo, const UiExtras *ex) {
   struct tm tmNow;
   g_jx = getLocalTime(&tmNow, 5) ? (tmNow.tm_min % 3) : 0;
 
@@ -638,7 +778,7 @@ void uiDraw(Arduino_GFX *g, int view, const OverheadData &oh, const BoardData &b
       snprintf(title, sizeof(title), "%s %s", iata[0] ? iata : "", dep ? "DEPARTURES" : "ARRIVALS");
       stale = bd.valid && (millis() - bd.fetched_ms > 3 * POLL_BOARD_MS);
       drawHeader(g, title, wifiOk, stale);
-      drawBoard(g, bd, dep);
+      drawBoard(g, bd, dep, ex ? ex->wx : nullptr);
       if (bd.valid && bd.updated) {
         struct tm tmUpd;
         time_t t = (time_t)bd.updated;
@@ -649,11 +789,22 @@ void uiDraw(Arduino_GFX *g, int view, const OverheadData &oh, const BoardData &b
       }
       break;
     }
+    case VIEW_FOLLOW: {
+      const FollowData *fl = ex ? ex->follow : nullptr;
+      snprintf(title, sizeof(title), "FOLLOWING");
+      stale = false;
+      drawHeader(g, title, wifiOk, stale);
+      if (fl) drawFollow(g, *fl, ex->followIdx);
+      else textCentered(g, 220, 3, COL_GREY, "WAITING FOR DATA...");
+      snprintf(status, sizeof(status), "%s",
+               fl && fl->count ? "FOLLOW-A-FLIGHT" : "NO FOLLOWED FLIGHTS");
+      break;
+    }
     default: {
       snprintf(title, sizeof(title), "%s", spotIdx >= 0 ? "OVERHEAD" : "NEARBY TRAFFIC");
       stale = oh.valid && (millis() - oh.fetched_ms > STALE_AFTER_MS);
       drawHeader(g, title, wifiOk, stale);
-      drawOverhead(g, oh, cfg, spotIdx, photo);
+      drawOverhead(g, oh, cfg, spotIdx, photo, ex ? ex->issLine : nullptr);
       if (oh.valid) {
         snprintf(status, sizeof(status), "%s%s%s | %d OVHD", oh.provider,
                  stale ? " | STALE" : "", wifiOk ? "" : " | WIFI DOWN", oh.overhead_count);
@@ -665,4 +816,5 @@ void uiDraw(Arduino_GFX *g, int view, const OverheadData &oh, const BoardData &b
     }
   }
   drawFooter(g, pageCount, pageIdx, status, flipInSec);
+  if (ex && ex->toast && ex->toast[0]) drawToast(g, ex->toast);
 }

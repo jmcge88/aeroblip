@@ -15,6 +15,10 @@ CST9220 touch). Shows live data from the flight-info server on the LAN:
   button to close (auto-hides after 60 s).
 - **Departures / Arrivals views** — the airport board with time, flight, city, gate
   and colour-coded status.
+- **Following view** — joins the rotation whenever a flight is followed from
+  the web dashboard (no on-device management): status, route, progress bar,
+  ETA, and the same embedded world map used for far-away emergencies. Cycles
+  every 15 s if more than one flight is followed.
 - **Emergency view (squawk 7700)** — the server's global 7700 watch feeds a
   red-alert screen: callsign, airline, route, aircraft, altitude/speed/heading,
   location and distance. A new global 7700 takes over the screen for 2 minutes
@@ -35,12 +39,28 @@ one 30 s slot before the takeover reclaims the screen):
   "NO FLIGHTS" + clock that drifts around to avoid burn-in. A tap, button, or
   an overhead flight wakes it.
 
+## Watch-list toasts, golden light and circling
+
+Server-side watch-rule matches (type/airline/callsign/registration/hex, or the
+circling/emergency-squawk/first-ever-type detectors - managed from the web
+dashboard's ◉ panel) pop up as an amber banner across the bottom of whatever
+screen is showing, for about 8 seconds. A circling aircraft (orbiting
+helicopters, holding patterns) is flagged inline wherever it appears - amber
+callsign and a CIRC/CIRCLING tag - and the overhead spotlight shows a GOLDEN
+LIGHT tag when the sun is at a photo-friendly angle. The board screens gain a
+one-line METAR summary above the table when the server has one, and the
+"ALL QUIET" empty-sky screen (and the near-black night screensaver) advertise
+the next naked-eye-visible ISS pass when one is coming up.
+
 ## Sound
 
 The onboard ES8311 codec plays a drawn-out three-tone airport chime when a
 flight enters the overhead ring (suppressed during quiet hours) and a siren
-alarm when a new 7700 appears (never suppressed). Each sound can be toggled
-and has its own volume slider in the settings page, with a live "test" preview.
+alarm when a new 7700 appears (never suppressed). Watch-list matches reuse
+these same two sounds: a squawk match alarms, everything else chimes (both
+still honour their own toggle and the chime's quiet-hours rule). Each sound
+can be toggled and has its own volume slider in the settings page, with a
+live "test" preview.
 
 Which screens are used (overhead only / board only / both), which sounds play
 and at what volume, the timezone (15 presets, DST-aware) and the quiet-hours
@@ -85,8 +105,9 @@ pio device monitor
 ## Notes
 
 - Data comes from `GET /api/overhead` (every 5 s), `/api/board` (every 60 s),
-  `/api/alerts` (every 60 s) and `/api/config` (once at boot). No auth; the
-  server must be reachable on the LAN.
+  `/api/alerts` (every 60 s), `/api/follow` (every 60 s, HTTP fallback only -
+  normally rides the websocket), `/api/wx` (10 min), `/api/sky` (30 min) and
+  `/api/config` (once at boot). No auth; the server must be reachable on the LAN.
 - The display dims during quiet hours and static labels drift by a couple of
   pixels to slow AMOLED burn-in. For a 24/7 installation consider a nightly deep
   sleep or screen-off window - AMOLED panels showing a mostly static board will

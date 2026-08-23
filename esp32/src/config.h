@@ -22,6 +22,13 @@
 #define POLL_OVERHEAD_MS 5000UL
 #define POLL_BOARD_MS 60000UL
 #define POLL_ALERTS_MS 60000UL
+// Follow-a-flight rides the ws "follow" frame when connected; this is the
+// HTTP-fallback interval only (matches the server's own round-robin pace).
+#define POLL_FOLLOW_MS 60000UL
+#define POLL_WX_MS 600000UL   // matches the server's own METAR cache TTL
+#define POLL_SKY_MS 1800000UL // ISS passes barely change minute to minute
+// A watch-match toast stays up this long before the normal footer returns
+#define WATCH_TOAST_MS 8000UL
 // Global 7700 data older than this no longer triggers the takeover
 #define ALERTS_FRESH_MS 200000UL
 // A global (far-away) alert owns the screen this long, then joins the normal

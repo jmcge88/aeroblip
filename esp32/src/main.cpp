@@ -54,6 +54,9 @@ static SemaphoreHandle_t dataLock;
 static OverheadData g_overhead = {};
 static BoardData g_board = {};
 static AlertsData g_alerts = {};
+static FollowData g_follow = {};
+static WxData g_wx = {};
+static SkyData g_sky = {};
 static AppConfig g_config;
 static volatile bool g_dirty = true;
 
@@ -536,7 +539,8 @@ static void onWsMessage(websockets::WebsocketsMessage msg) {
   static OverheadData oh;
   static BoardData bd;
   static AlertsData al;
-  int which = handleWsMessage((const uint8_t *)raw.data(), raw.size(), oh, bd, al);
+  static FollowData fl;
+  int which = handleWsMessage((const uint8_t *)raw.data(), raw.size(), oh, bd, al, fl);
   if (which) {
     if (!g_wsConnected) Serial.println("[ws] receiving frames");
     g_wsConnected = true;
@@ -544,7 +548,8 @@ static void onWsMessage(websockets::WebsocketsMessage msg) {
     xSemaphoreTake(dataLock, portMAX_DELAY);
     if (which == 1) g_overhead = oh;
     else if (which == 2) g_board = bd;
-    else g_alerts = al;
+    else if (which == 3) g_alerts = al;
+    else g_follow = fl;
     xSemaphoreGive(dataLock);
     g_dirty = true;
   }
@@ -739,6 +744,42 @@ static void netTask(void *) {
         g_dirty = true;
       }
     }
+    // Follow-a-flight normally rides the ws "follow" frame; HTTP fallback
+    // only kicks in when the socket is down, same pattern as the others.
+    static uint32_t lastFollow = 0;
+    if (!wsAlive && (now - lastFollow >= POLL_FOLLOW_MS || lastFollow == 0)) {
+      lastFollow = now;
+      FollowData tmp;
+      if (fetchFollow(tmp)) {
+        xSemaphoreTake(dataLock, portMAX_DELAY);
+        g_follow = tmp;
+        xSemaphoreGive(dataLock);
+        g_dirty = true;
+      }
+    }
+    // Weather and ISS passes have no ws frame - always plain HTTP, but slow
+    static uint32_t lastWx = 0;
+    if (now - lastWx >= POLL_WX_MS || lastWx == 0) {
+      lastWx = now;
+      WxData tmp;
+      if (fetchWx(tmp)) {
+        xSemaphoreTake(dataLock, portMAX_DELAY);
+        g_wx = tmp;
+        xSemaphoreGive(dataLock);
+        g_dirty = true;
+      }
+    }
+    static uint32_t lastSky = 0;
+    if (now - lastSky >= POLL_SKY_MS || lastSky == 0) {
+      lastSky = now;
+      SkyData tmp;
+      if (fetchSky(tmp)) {
+        xSemaphoreTake(dataLock, portMAX_DELAY);
+        g_sky = tmp;
+        xSemaphoreGive(dataLock);
+        g_dirty = true;
+      }
+    }
     servicePhoto();
     serviceLogos();
     otaService();
@@ -795,11 +836,17 @@ static void pollOrientation() {
 // Pages currently in the rotation. The air page (overhead/nearby) is included
 // when the nearby screen is ticked, or - with only overhead ticked - while
 // something is actually in the ring.
+static volatile int g_followCount = 0; // updated each redraw; buildPages reads it
+
 static int buildPages(int *pages) {
   int n = 0;
   if ((g_screens & SCR_EMERGENCY) && g_emActive) pages[n++] = VIEW_EMERGENCY;
   if ((g_screens & SCR_OVERHEAD) && g_ringOccupied) pages[n++] = VIEW_OVERHEAD;
   if (g_screens & SCR_NEARBY) pages[n++] = VIEW_NEARBY;
+  // Follow-a-flight is managed on the web dashboard, not this device's
+  // portal - it simply joins the rotation whenever a follow exists, like the
+  // web app's own FOLLOWING page.
+  if (g_followCount > 0) pages[n++] = VIEW_FOLLOW;
   if (g_screens & SCR_DEPARTURES) pages[n++] = VIEW_DEPARTURES;
   if (g_screens & SCR_ARRIVALS) pages[n++] = VIEW_ARRIVALS;
   if (n == 0) pages[n++] = VIEW_OVERHEAD;
@@ -944,7 +991,7 @@ static int chooseView(const OverheadData &oh, const BoardData &bd) {
 
   bool wasSleeping = g_sleeping;
   g_sleeping = !spotlight && !alert && !manualHold &&
-               (quiet || !(showAir || showDeps || showArrs));
+               (quiet || !(showAir || showDeps || showArrs || g_followCount > 0));
   if (wasSleeping != g_sleeping) g_dirty = true;
 
   // Takeover: snap to the alert/overhead page the moment one becomes active.
@@ -997,6 +1044,7 @@ static int chooseView(const OverheadData &oh, const BoardData &bd) {
   // Reaching here with an active alert means it was demoted above: keep it cycling
   if ((g_screens & SCR_EMERGENCY) && g_emActive) rot[rn++] = VIEW_EMERGENCY;
   if (showAir) rot[rn++] = VIEW_NEARBY; // nearby traffic
+  if (g_followCount > 0) rot[rn++] = VIEW_FOLLOW;
   if (showDeps) rot[rn++] = VIEW_DEPARTURES;
   if (showArrs) rot[rn++] = VIEW_ARRIVALS;
   if (rn == 0) return -1; // sleep logic above already covers this
@@ -1231,13 +1279,20 @@ void loop() {
     static OverheadData oh;
     static BoardData bd;
     static AlertsData al;
+    static FollowData fl;
+    static WxData wx;
+    static SkyData sky;
     static AppConfig cfg;
     xSemaphoreTake(dataLock, portMAX_DELAY);
     oh = g_overhead;
     bd = g_board;
     al = g_alerts;
+    fl = g_follow;
+    wx = g_wx;
+    sky = g_sky;
     cfg = g_config;
     xSemaphoreGive(dataLock);
+    g_followCount = fl.count; // buildPages()/chooseView() read this
 
     if (g_showInfo && millis() - g_infoSince > 60000) g_showInfo = false; // auto-hide
 
@@ -1277,6 +1332,44 @@ void loop() {
     prevRing = g_ringOccupied;
     snprintf(prevAlertHex, sizeof(prevAlertHex), "%s", g_alertHex);
 
+    // Watch-rule matches (server-side: type/airline/callsign/circling/squawk/
+    // first-ever-type - see services/watches.py) ride the overhead snapshot.
+    // Toast the newest one for WATCH_TOAST_MS; a squawk match alarms like an
+    // emergency, anything else chimes like a flyover (both honour their own
+    // sound toggle and quiet-hours rule).
+    static char seenWatchIds[6][14] = {{0}};
+    static int seenWatchNext = 0;
+    static char toastMsg[160] = "";
+    static uint32_t toastUntil = 0;
+    for (int i = 0; i < oh.n_watch_events; i++) {
+      const WatchEvent &w = oh.watch_events[i];
+      bool seen = false;
+      for (auto &s : seenWatchIds)
+        if (!strcmp(s, w.id)) { seen = true; break; }
+      if (seen) continue;
+      snprintf(seenWatchIds[seenWatchNext], sizeof(seenWatchIds[0]), "%s", w.id);
+      seenWatchNext = (seenWatchNext + 1) % 6;
+      snprintf(toastMsg, sizeof(toastMsg), "%s: %s", w.title, w.message);
+      toastUntil = millis() + WATCH_TOAST_MS;
+      bool isSquawk = !strcmp(w.kind, "squawk");
+      if (isSquawk && (g_sounds & SND_ALARM)) audioPlayAlarm();
+      else if (!isSquawk && (g_sounds & SND_CHIME) && !inQuietHours()) audioPlayChime();
+      g_dirty = true;
+    }
+    const char *activeToast = (toastUntil && millis() < toastUntil) ? toastMsg : "";
+
+    // Next visible ISS pass, formatted once here for both the sleep and
+    // overhead screens ("ISS PASS 19:42 W>NE MAX 45")
+    static char issLine[40] = "";
+    issLine[0] = '\0';
+    if (sky.valid && sky.has_pass && sky.pass_start > (uint32_t)time(nullptr)) {
+      struct tm tmPass;
+      time_t t = (time_t)sky.pass_start;
+      localtime_r(&t, &tmPass);
+      snprintf(issLine, sizeof(issLine), "ISS PASS %02d:%02d %s>%s MAX %d", tmPass.tm_hour,
+               tmPass.tm_min, sky.start_dir, sky.end_dir, sky.max_el);
+    }
+
     if (g_netState == NET_PORTAL) {
       // Portal takes the screen even when old data is still around (e.g. the
       // 3s-hold gesture reopened it while the device was happily online)
@@ -1285,19 +1378,20 @@ void loop() {
       int flipIn = chooseView(oh, bd);
       if (g_sleeping) {
         g_showInfo = false;
-        uiDrawSleep(canvas);
+        uiDrawSleep(canvas, issLine);
       } else if (g_showInfo) {
         DeviceInfo di = {};
         snprintf(di.ssid, sizeof(di.ssid), "%s", WiFi.SSID().c_str());
         di.rssi = WiFi.RSSI();
         snprintf(di.ip, sizeof(di.ip), "%s", WiFi.localIP().toString().c_str());
         snprintf(di.server, sizeof(di.server), "%s", serverBaseUrl());
-        snprintf(di.screens, sizeof(di.screens), "%s%s%s%s%s",
+        snprintf(di.screens, sizeof(di.screens), "%s%s%s%s%s%s",
                  (g_screens & SCR_OVERHEAD) ? "OVHD " : "",
                  (g_screens & SCR_NEARBY) ? "NEAR " : "",
                  (g_screens & SCR_ARRIVALS) ? "ARR " : "",
                  (g_screens & SCR_DEPARTURES) ? "DEP " : "",
-                 (g_screens & SCR_EMERGENCY) ? "7700" : "");
+                 (g_screens & SCR_EMERGENCY) ? "7700 " : "",
+                 g_followCount > 0 ? "FOLW" : "");
         if (!powerOk) {
           snprintf(di.battery, sizeof(di.battery), "UNKNOWN");
         } else if (!power.isBatteryConnect()) {
@@ -1335,9 +1429,15 @@ void loop() {
         xSemaphoreTake(dataLock, portMAX_DELAY);
         ph = g_photo;
         xSemaphoreGive(dataLock);
+
+        // Multiple follows share one page slot; auto-rotate between them
+        // the same way the web app's "also nearby" strip does.
+        int followIdx = fl.count > 1 ? (int)((millis() / ALERT_ALTERNATE_MS) % fl.count) : 0;
+        UiExtras ex = {&fl, &wx, issLine, activeToast, followIdx};
+
         uiDraw(canvas, g_view, oh, bd, cfg, WiFi.status() == WL_CONNECTED,
                g_view == VIEW_OVERHEAD ? spotIdx : -1, emIdx, galert, n,
-               pageIndex(pages, n), flipIn, &ph);
+               pageIndex(pages, n), flipIn, &ph, &ex);
       }
       canvas->flush();
       applyBrightness(g_sleeping);

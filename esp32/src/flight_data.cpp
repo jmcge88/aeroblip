@@ -188,11 +188,15 @@ static void overheadFilterInto(JsonVariant f) {
   f["overhead_count"] = true;
   f["overhead_radius_nm"] = true;
   f["area_radius_nm"] = true;
+  f["sun"]["golden"] = true;
+  JsonObject fw = f["watch_events"].add<JsonObject>();
+  for (const char *k : {"id", "kind", "title", "message"})
+    fw[k] = true;
   JsonObject fa = f["aircraft"].add<JsonObject>();
   for (const char *k : {"hex", "callsign", "registration", "type", "description", "phase",
                         "heading_cardinal", "altitude_ft", "ground_speed_kt", "track",
                         "distance_nm", "bearing_from_home", "vertical_rate_fpm", "overhead",
-                        "squawk", "emergency", "lat", "lon", "place"})
+                        "squawk", "emergency", "lat", "lon", "place", "circling"})
     fa[k] = true;
   for (const char *k : {"origin", "destination", "origin_name", "destination_name",
                         "airline", "airline_iata"})
@@ -220,6 +224,7 @@ static void parseAircraft(JsonObjectConst a, Aircraft &ac) {
   ac.bearing_from_home = a["bearing_from_home"] | NAN;
   ac.vertical_rate_fpm = a["vertical_rate_fpm"] | 0;
   ac.overhead = a["overhead"] | false;
+  ac.circling = a["circling"] | false;
   copyAscii(ac.photo, sizeof(ac.photo), a["info"]["photo_thumb"] | "");
   copyAscii(ac.squawk, sizeof(ac.squawk), a["squawk"] | "");
   copyAscii(ac.emergency, sizeof(ac.emergency), a["emergency"] | "");
@@ -253,6 +258,16 @@ static bool parseOverheadPayload(JsonVariantConst doc, OverheadData &out) {
   d.area_radius_nm = doc["area_radius_nm"] | 60.0f;
   copyAscii(d.provider, sizeof(d.provider), doc["provider"] | "");
   d.updated = doc["updated"] | 0;
+  d.sun_golden = doc["sun"]["golden"] | false;
+  for (JsonObjectConst ev : doc["watch_events"].as<JsonArrayConst>()) {
+    if (d.n_watch_events >= MAX_WATCH_EVENTS) break;
+    WatchEvent &w = d.watch_events[d.n_watch_events];
+    copyAscii(w.id, sizeof(w.id), ev["id"] | "");
+    copyAscii(w.kind, sizeof(w.kind), ev["kind"] | "");
+    copyAscii(w.title, sizeof(w.title), ev["title"] | "");
+    copyAscii(w.message, sizeof(w.message), ev["message"] | "");
+    if (w.id[0]) d.n_watch_events++;
+  }
   d.valid = true;
   d.fetched_ms = millis();
   out = d;
@@ -344,13 +359,128 @@ bool fetchAlerts(AlertsData &out) {
   return parseAlertsPayload(doc, out);
 }
 
+static void followFilterInto(JsonVariant f) {
+  JsonObject ff = f["follows"].add<JsonObject>();
+  for (const char *k : {"callsign", "status", "progress_pct", "eta_s", "eta_utc",
+                        "dist_to_dest_nm"})
+    ff[k] = true;
+  for (const char *k : {"registration", "type", "description", "heading_cardinal",
+                        "altitude_ft", "ground_speed_kt", "track", "lat", "lon",
+                        "vertical_rate_fpm"})
+    ff["aircraft"][k] = true;
+  for (const char *k : {"origin", "destination", "origin_name", "destination_name",
+                        "airline", "airline_iata"})
+    ff["route"][k] = true;
+}
+
+static bool parseFollowPayload(JsonVariantConst doc, FollowData &out) {
+  FollowData d = {};
+  for (JsonObjectConst f : doc["follows"].as<JsonArrayConst>()) {
+    if (d.count >= MAX_FOLLOWS_SHOWN) break;
+    FollowFlight &ff = d.flights[d.count];
+    parseAircraft(f["aircraft"].isNull() ? JsonObjectConst() : f["aircraft"].as<JsonObjectConst>(),
+                  ff.ac);
+    // The route is a sibling of "aircraft" here, and the callsign is the
+    // follow's own key (the aircraft block is empty while status=waiting)
+    copyAscii(ff.ac.callsign, sizeof(ff.ac.callsign), f["callsign"] | "");
+    JsonObjectConst route = f["route"];
+    if (!route.isNull()) {
+      ff.ac.has_route = true;
+      copyAscii(ff.ac.origin, sizeof(ff.ac.origin), route["origin"] | "");
+      copyAscii(ff.ac.destination, sizeof(ff.ac.destination), route["destination"] | "");
+      copyAscii(ff.ac.origin_name, sizeof(ff.ac.origin_name), route["origin_name"] | "");
+      copyAscii(ff.ac.destination_name, sizeof(ff.ac.destination_name),
+                route["destination_name"] | "");
+      copyAscii(ff.ac.airline, sizeof(ff.ac.airline), route["airline"] | "");
+      copyAscii(ff.ac.airline_iata, sizeof(ff.ac.airline_iata), route["airline_iata"] | "");
+    }
+    copyAscii(ff.status, sizeof(ff.status), f["status"] | "");
+    ff.progress_pct = f["progress_pct"] | NAN;
+    ff.eta_s = f["eta_s"] | -1;
+    ff.eta_utc = f["eta_utc"] | 0;
+    ff.dist_to_dest_nm = f["dist_to_dest_nm"] | NAN;
+    if (ff.ac.callsign[0]) d.count++;
+  }
+  d.valid = true;
+  d.fetched_ms = millis();
+  out = d;
+  return true;
+}
+
+bool fetchFollow(FollowData &out) {
+  JsonDocument filter;
+  followFilterInto(filter.to<JsonVariant>());
+  JsonDocument doc;
+  if (!httpGetJson("/api/follow", doc, &filter)) return false;
+  return parseFollowPayload(doc, out);
+}
+
+bool fetchWx(WxData &out) {
+  JsonDocument doc; // small response; no filter needed
+  if (!httpGetJson("/api/wx", doc, nullptr)) return false;
+  WxData d = {};
+  copyAscii(d.icao, sizeof(d.icao), doc["icao"] | "");
+  // Compose the display line here so the UI just prints it:
+  // "140/07KT  -SHRA  FEW035  22/13C  Q1024"
+  size_t o = 0;
+  auto append = [&](const char *fmt, auto... args) {
+    if (o >= sizeof(d.line) - 1) return;
+    int n = snprintf(d.line + o, sizeof(d.line) - o, fmt, args...);
+    if (n < 0) return;
+    o = (size_t)n >= sizeof(d.line) - o ? sizeof(d.line) - 1 : o + (size_t)n;
+  };
+  if (!doc["wind_kt"].isNull()) {
+    if (doc["wind_dir"].is<const char *>()) append("VRB/%02dKT", (int)(doc["wind_kt"] | 0));
+    else append("%03d/%02dKT", (int)(doc["wind_dir"] | 0), (int)(doc["wind_kt"] | 0));
+    if (!doc["gust_kt"].isNull()) append("G%d", (int)(doc["gust_kt"] | 0));
+  }
+  const char *wx = doc["wx"] | "";
+  if (wx[0]) append("%s%.10s", o ? "  " : "", wx);
+  const char *clouds = doc["clouds"] | "";
+  if (clouds[0]) append("%s%.12s", o ? "  " : "", clouds);
+  if (!doc["temp_c"].isNull()) {
+    append("%s%d", o ? "  " : "", (int)(doc["temp_c"] | 0));
+    if (!doc["dewpoint_c"].isNull()) append("/%d", (int)(doc["dewpoint_c"] | 0));
+    append("C");
+  }
+  if (!doc["qnh_hpa"].isNull()) append("%sQ%d", o ? "  " : "", (int)(doc["qnh_hpa"] | 0));
+  d.valid = d.line[0] != '\0';
+  d.fetched_ms = millis();
+  if (!d.valid) return false;
+  out = d;
+  return true;
+}
+
+bool fetchSky(SkyData &out) {
+  JsonDocument filter;
+  for (const char *k : {"start", "end", "max_elevation_deg", "start_dir", "end_dir"})
+    filter["iss"]["next_visible"][k] = true;
+  JsonDocument doc;
+  if (!httpGetJson("/api/sky", doc, &filter)) return false;
+  SkyData d = {};
+  JsonObjectConst p = doc["iss"]["next_visible"];
+  if (!p.isNull()) {
+    d.has_pass = true;
+    d.pass_start = p["start"] | 0;
+    d.pass_end = p["end"] | 0;
+    d.max_el = p["max_elevation_deg"] | 0;
+    copyAscii(d.start_dir, sizeof(d.start_dir), p["start_dir"] | "");
+    copyAscii(d.end_dir, sizeof(d.end_dir), p["end_dir"] | "");
+  }
+  d.valid = true;
+  d.fetched_ms = millis();
+  out = d;
+  return true;
+}
+
 int handleWsMessage(const uint8_t *payload, size_t len, OverheadData &oh, BoardData &bd,
-                    AlertsData &al) {
+                    AlertsData &al, FollowData &fl) {
   JsonDocument filter;
   filter["type"] = true;
   JsonVariant fd = filter["data"].to<JsonObject>();
   overheadFilterInto(fd);
   boardFilterInto(fd);
+  followFilterInto(fd);
 
   JsonDocument doc;
   DeserializationError err =
@@ -363,6 +493,7 @@ int handleWsMessage(const uint8_t *payload, size_t len, OverheadData &oh, BoardD
   if (strcmp(type, "overhead") == 0) return parseOverheadPayload(doc["data"], oh) ? 1 : 0;
   if (strcmp(type, "board") == 0) return parseBoardPayload(doc["data"], bd) ? 2 : 0;
   if (strcmp(type, "alerts") == 0) return parseAlertsPayload(doc["data"], al) ? 3 : 0;
+  if (strcmp(type, "follow") == 0) return parseFollowPayload(doc["data"], fl) ? 4 : 0;
   return 0;
 }
 
