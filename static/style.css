@@ -549,6 +549,19 @@ td.board-note {
 #loc-note { color: #ff6b6b; font-size: .72rem; margin: 8px 0 0; }
 
 /* ---------- first-load spinner (nearby view) ---------- */
+/* Flyover-quality tags: golden light for the photographers, circling for the
+   "what is that helicopter doing" crowd */
+.golden-tag { color: #ffd75e; letter-spacing: 0.08em; }
+.circling-tag {
+  color: var(--bg);
+  background: var(--amber);
+  border-radius: 0.4vh;
+  padding: 0 0.6vw;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  animation: blink 1.6s step-end infinite;
+}
+
 .empty-msg.loading { display: flex; align-items: center; gap: 14px; justify-content: center; }
 .spinner {
   width: 22px; height: 22px; border-radius: 50%;

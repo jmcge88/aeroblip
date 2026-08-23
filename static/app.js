@@ -816,8 +816,12 @@ function renderSpotlight() {
   // Only the text facts and vector map update each poll - no <img> churn.
   setHTML(els.spotlightView.querySelector(".sp-facts"), facts);
   const eta = etaToOverhead(a);
-  setHTML(els.spotlightView.querySelector(".sp-eta"),
-    eta != null ? `OVERHEAD IN ${fmtEta(eta)}` : "");
+  const spTags = [
+    eta != null ? `OVERHEAD IN ${fmtEta(eta)}` : "",
+    a.circling ? `<span class="circling-tag">CIRCLING</span>` : "",
+    overhead.sun?.golden ? `<span class="golden-tag">☀ GOLDEN LIGHT</span>` : "",
+  ].filter(Boolean).join(" ");
+  setHTML(els.spotlightView.querySelector(".sp-eta"), spTags);
   setHTML(els.spotlightView.querySelector(".sp-map"), mapSVG(a));
   // Nothing else overhead: fill the strip with the nearest area traffic instead
   let othersHtml = others.map(otherCard).join("");
@@ -871,6 +875,9 @@ function renderRadar() {
       ? `<span class="ac-phase-${esc(a.phase)}">${esc(a.phase.toUpperCase())}</span>` : "";
     const eta = etaToOverhead(a);
     const etaTag = eta != null ? `<span class="ac-eta">OVERHEAD IN ${fmtEta(eta)}</span>` : "";
+    const circlingTag = a.circling ? `<span class="circling-tag">CIRCLING</span>` : "";
+    const goldenTag = overhead.sun?.golden && (a.overhead || eta != null)
+      ? `<span class="golden-tag">☀ GOLDEN</span>` : "";
     const rot = a.track != null ? `transform: rotate(${Math.round(a.track)}deg)` : "";
     const airline = esc(a.airline?.airline ?? "");
     const logo = logoImg(a.airline?.airline_iata, "ac-logo");
@@ -886,7 +893,7 @@ function renderRadar() {
         <div class="ac-sub">
           ${airline ? `<span>${airline}</span>` : ""}
           <span>${esc(a.type ?? "")} ${a.registration ? "· " + esc(a.registration) : ""}</span>
-          <span>${alt}</span><span>${spd}</span><span>${dist}</span>${phase}${etaTag}
+          <span>${alt}</span><span>${spd}</span><span>${dist}</span>${phase}${etaTag}${circlingTag}${goldenTag}
         </div>
         <div class="ac-side">
           ${thumb}

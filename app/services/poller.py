@@ -10,6 +10,7 @@ from datetime import datetime
 
 from app import config
 from app.providers.radar import RadarProvider
+from app.services.sun import light_info
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +98,24 @@ FLYOVER_START_NM = -6.0
 FLYOVER_END_NM = 25.0
 FLYOVER_SPEED_NM_S = 0.25
 
+# Demo police helicopter orbiting a point a few NM out - exercises the
+# circling detector without waiting for a real one to show up.
+DEMO_ORBITER = {
+    "callsign": "POL35", "type": "EC35", "desc": "AIRBUS H135 HELICOPTER",
+    "reg": "VH-PHK", "alt": 1500,
+    "centre_nm": (2.6, 2.2),  # (east, north) of home
+    "radius_nm": 0.8, "period_s": 190,  # ~95 kt around the circle
+}
+
+# Circling detection: a news/police helicopter or a survey aircraft orbits
+# rather than transits. Integrate signed heading change over a sliding window:
+# 1.5 full turns while barely going anywhere is unambiguous orbiting (a
+# holding pattern also qualifies - that's traffic worth flagging too).
+CIRCLE_WINDOW_S = 480.0
+CIRCLE_MIN_TURN_DEG = 540.0
+CIRCLE_MAX_DRIFT_NM = 8.0
+CIRCLE_MIN_SAMPLES = 5
+
 
 def is_airline_callsign(callsign: str) -> bool:
     """True for ICAO airline callsigns: 3 letters then a flight number (QFA551).
@@ -167,6 +186,7 @@ class OverheadPoller:
         self._info_cache: dict[str, dict | None] = {}
         self._flyovers: list[float] = []  # start times of demo flyovers
         self._listeners: dict[asyncio.Queue, tuple] = {}  # queue -> view params
+        self._paths: dict[str, list[tuple]] = {}  # hex -> [(t, track, lat, lon)]
 
     def touch(self) -> None:
         self.last_used = time.monotonic()
@@ -247,7 +267,10 @@ class OverheadPoller:
                 "polled": polled,
                 "overhead_count": sum(1 for a in aircraft if a["overhead"]),
                 "overhead_radius_nm": overhead_nm,
-                "area_radius_nm": area_nm}
+                "area_radius_nm": area_nm,
+                # Light quality at the viewer's exact home: displays tag
+                # golden-hour flyovers, watch rules can require good light.
+                "sun": light_info(lat, lon, now)}
 
     async def run(self) -> None:
         while True:
@@ -283,6 +306,7 @@ class OverheadPoller:
             self._drop_implausible_routes(aircraft)
             await self._enrich_info(aircraft)
             provider = self._provider.active
+        self._flag_circling(aircraft)
         aircraft.sort(key=lambda a: a["distance_nm"] if a["distance_nm"] is not None else 999)
         self.snapshot = {
             "aircraft": aircraft,
@@ -298,6 +322,31 @@ class OverheadPoller:
         """Demo mode: spawn a one-shot flight that passes directly overhead."""
         self._flyovers.append(time.time())
 
+    def _flag_circling(self, aircraft: list[dict]) -> None:
+        """Set a["circling"] on aircraft that are orbiting rather than
+        transiting, from per-hex heading history across polls."""
+        now = time.time()
+        live = {a["hex"] for a in aircraft if a.get("hex")}
+        for h in list(self._paths):
+            if h not in live:  # left the area; a returning hex starts fresh
+                del self._paths[h]
+        for a in aircraft:
+            h, tr = a.get("hex"), a.get("track")
+            a["circling"] = False
+            if not h or tr is None or a.get("lat") is None:
+                continue
+            hist = self._paths.setdefault(h, [])
+            hist.append((now, tr, a["lat"], a["lon"]))
+            while hist and now - hist[0][0] > CIRCLE_WINDOW_S:
+                hist.pop(0)
+            if len(hist) < CIRCLE_MIN_SAMPLES:
+                continue
+            turn = sum(((t1 - t0 + 540) % 360) - 180
+                       for (_, t0, _, _), (_, t1, _, _) in zip(hist, hist[1:]))
+            drift = haversine_nm(hist[0][2], hist[0][3], a["lat"], a["lon"])
+            a["circling"] = (abs(turn) >= CIRCLE_MIN_TURN_DEG
+                             and drift <= CIRCLE_MAX_DRIFT_NM)
+
     async def poll_now(self) -> None:
         await self._poll_once()
 
@@ -311,6 +360,9 @@ class OverheadPoller:
             ac = self._demo_ac(f, along, f"dem{i:03d}")
             if ac:
                 out.append(ac)
+        orbiter = self._demo_orbiter(now)
+        if orbiter:
+            out.append(orbiter)
         active = []
         for j, t0 in enumerate(self._flyovers):
             along = FLYOVER_START_NM + (now - t0) * FLYOVER_SPEED_NM_S
@@ -321,6 +373,48 @@ class OverheadPoller:
                     out.append(ac)
         self._flyovers = active
         return out
+
+    def _demo_orbiter(self, now: float) -> dict | None:
+        """Fabricated helicopter flying circles (see DEMO_ORBITER)."""
+        f = DEMO_ORBITER
+
+        def pos(t: float) -> tuple[float, float]:
+            th = 2 * math.pi * (t / f["period_s"])
+            return (f["centre_nm"][0] + f["radius_nm"] * math.sin(th),
+                    f["centre_nm"][1] + f["radius_nm"] * math.cos(th))
+
+        x, y = pos(now)
+        dist = math.hypot(x, y)
+        if dist > self._area_nm:
+            return None
+        x2, y2 = pos(now + 1.0)  # one second on: heading is the tangent
+        track = (math.degrees(math.atan2(x2 - x, y2 - y)) + 360) % 360
+        gs = round(2 * math.pi * f["radius_nm"] / f["period_s"] * 3600)
+        bearing = (math.degrees(math.atan2(x, y)) + 360) % 360
+        return {
+            "hex": "demorb",
+            "callsign": f["callsign"],
+            "registration": f["reg"],
+            "type": f["type"],
+            "description": f["desc"],
+            "lat": round(self._lat + y / 60.0, 5),
+            "lon": round(self._lon
+                         + x / (60.0 * math.cos(math.radians(self._lat))), 5),
+            "altitude_ft": f["alt"],
+            "ground_speed_kt": gs,
+            "track": round(track, 1),
+            "heading_cardinal": cardinal(track),
+            "vertical_rate_fpm": 0,
+            "phase": "level",
+            "distance_nm": round(dist, 2),
+            "bearing_from_home": round(bearing, 1),
+            "overhead": dist <= self._overhead_nm,
+            "route": None,
+            "airline": None,
+            "info": {"manufacturer": "Airbus Helicopters", "model": "H135",
+                     "owner": "Queensland Police", "country": "Australia",
+                     "photo": None, "photo_thumb": None},
+        }
 
     def _demo_ac(self, f: dict, along: float, hexcode: str) -> dict | None:
         th = math.radians(f["track"])
