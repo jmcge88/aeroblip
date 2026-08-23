@@ -1,7 +1,7 @@
 .env
 __pycache__/
 *.pyc
-.venv/
+.venv*/
 
 # Runtime state: device-token registry and logo cache
 data/
