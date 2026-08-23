@@ -1386,12 +1386,11 @@ const statsEls = {
   cell: document.getElementById("stats-cell"),
 };
 let statsMap = null;
-let statsMarkers = {};       // hex -> replay marker
-let statsIndex = null;       // hex -> {pts: [[ts, lat, lon], ...], ptr}
-let statsPlaying = null;     // interval id while replaying
+let statsMarkers = {};   // hex -> replay marker (the "active" dots the labels toggle targets)
+let statsIndex = null;   // hex -> {pts: [[ts, lat, lon, alt, callsign, origin, dest], ...], ptr}
+let statsPlaying = null; // interval id while replaying
 let statsLastT = 0;
-let statsTrackMarkers = [];  // { marker, label } for every rendered dot, for the labels toggle
-let statsLabelsOn = false;   // show every dot's label at once, not just on click
+let statsLabelsOn = false; // keep the active replay markers' labels shown, not just on click
 
 statsEls.btn.onclick = () => {
   closePanels();
@@ -1402,7 +1401,6 @@ statsEls.close.onclick = () => {
   statsEls.overlay.classList.add("hidden");
   stopReplay();
   if (statsMap) { statsMap.remove(); statsMap = null; statsMarkers = {}; }
-  statsTrackMarkers = [];
 };
 
 async function loadStats() {
@@ -1484,7 +1482,7 @@ function renderStats(s, tracks) {
     <div class="stats-cols">${cols}</div>
     <div class="stats-section-hdr">SKY TRACKS – LAST 24 H (${nPts} SAMPLES${tracks.truncated ? ", TRUNCATED" : ""})</div>
     <label class="stats-toggle">
-      <input type="checkbox" id="tracks-labels-toggle"> Always show callsign / altitude / route
+      <input type="checkbox" id="tracks-labels-toggle"> Always label the active flights
     </label>
     <div id="stats-map"></div>
     <div class="stats-map-bar">
@@ -1492,8 +1490,9 @@ function renderStats(s, tracks) {
       <input id="replay-slider" type="range">
       <span id="replay-time">NOW</span>
     </div>
-    <div class="stats-note">Dots: amber below 10,000 ft, green above. Click a dot for its callsign, altitude and
-      route, or tick the box above to keep every label on screen. Drag the slider or press replay to sweep the day.</div>`;
+    <div class="stats-note">Dots: amber below 10,000 ft, green above. Click any dot for its callsign, altitude and
+      route. The larger dots are live at the slider's current time - tick the box above to keep their labels on
+      screen as you drag the slider or press replay, instead of one at a time.</div>`;
   initStatsMap(tracks);
 }
 
@@ -1507,14 +1506,20 @@ function trackPointLabel(hex, alt, callsign, origin, destination) {
   return `${cs} · ${altStr} · ${route}`;
 }
 
-// Show/hide a permanent label on every dot at once - "click a dot" (the
-// popup below) works regardless of this toggle.
+// Show/hide a permanent label on the dots currently live in the replay -
+// not the whole 24 h trail, just whichever aircraft are "on screen" at the
+// current scrub position. "Click a dot" (the popup bound in drawReplay,
+// and on the heatmap trail below) works regardless of this toggle.
 function applyTrackLabelsToggle() {
-  for (const { marker, label } of statsTrackMarkers) {
-    marker.unbindTooltip();
+  for (const hex in statsMarkers) {
+    const m = statsMarkers[hex];
     if (statsLabelsOn) {
-      marker.bindTooltip(label, { permanent: true, direction: "top", offset: [0, -1],
-                                   opacity: 0.9, className: "track-tooltip" }).openTooltip();
+      if (!m.getTooltip()) {
+        m.bindTooltip(m._aeroblipLabel || "", { permanent: true, direction: "top",
+          offset: [0, -4], opacity: 0.9, className: "track-tooltip" }).openTooltip();
+      }
+    } else if (m.getTooltip()) {
+      m.unbindTooltip();
     }
   }
 }
@@ -1526,7 +1531,6 @@ function initStatsMap(tracks) {
   statsMap = L.map(el, { attributionControl: false });
   L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
               { maxZoom: 12 }).addTo(statsMap);
-  statsTrackMarkers = [];
   const toggle = document.getElementById("tracks-labels-toggle");
   if (toggle) {
     toggle.checked = statsLabelsOn;
@@ -1534,30 +1538,32 @@ function initStatsMap(tracks) {
   }
   const pts = tracks.points || [];
   if (!pts.length) { statsMap.setView([-27.4, 153.1], 8); return; }
-  // Heatmap layer: cap the dot count so old tablets keep up
+  // Heatmap layer: the full 24 h trail, capped so old tablets keep up. Click
+  // one for its details - the always-on labels toggle only applies to the
+  // live replay markers below (drawReplay), not this whole trail at once.
   const step = Math.max(1, Math.ceil(pts.length / 8000));
   const canvas = L.canvas({ padding: 0.3 });
   const bounds = [];
   for (let i = 0; i < pts.length; i += step) {
     const [, hex, lat, lon, alt, callsign, origin, destination] = pts[i];
     bounds.push([lat, lon]);
-    const marker = L.circleMarker([lat, lon], {
+    L.circleMarker([lat, lon], {
       renderer: canvas, radius: 1.4, stroke: false,
       fillColor: alt != null && alt < 10000 ? "#ffb400" : "#3ddc84",
       fillOpacity: 0.3,
-    }).addTo(statsMap);
-    const label = trackPointLabel(hex, alt, callsign, origin, destination);
-    marker.bindPopup(label, { className: "track-popup", closeButton: false });
-    statsTrackMarkers.push({ marker, label });
+    }).addTo(statsMap).bindPopup(trackPointLabel(hex, alt, callsign, origin, destination),
+                                  { className: "track-popup", closeButton: false });
   }
-  applyTrackLabelsToggle();
   statsMap.fitBounds(L.latLngBounds(bounds).pad(0.05));
-  // Replay index: per-aircraft sample lists in time order
+  // Replay index: per-aircraft sample lists in time order, carrying enough
+  // of each sample (alt/callsign/route) to label the live marker below.
   statsIndex = {};
-  for (const [ts, hex, lat, lon] of pts) {
-    (statsIndex[hex] ??= { pts: [], ptr: 0 }).pts.push([ts, lat, lon]);
+  for (const [ts, hex, lat, lon, alt, callsign, origin, destination] of pts) {
+    (statsIndex[hex] ??= { pts: [], ptr: 0 })
+      .pts.push([ts, lat, lon, alt, callsign, origin, destination]);
   }
   setupReplay(tracks);
+  drawReplay(+document.getElementById("replay-slider").value); // seed the "NOW" markers
 }
 
 function setupReplay(tracks) {
@@ -1613,12 +1619,25 @@ function drawReplay(T) {
       pos = [p[1], p[2]];
     }
     if (pos) {
-      if (!statsMarkers[hex]) {
-        statsMarkers[hex] = L.circleMarker(pos, {
+      let m = statsMarkers[hex];
+      if (!m) {
+        m = statsMarkers[hex] = L.circleMarker(pos, {
           radius: 4, stroke: false, fillColor: "#3ddc84", fillOpacity: 0.95,
         }).addTo(statsMap);
+        m.bindPopup("", { className: "track-popup", closeButton: false });
       } else {
-        statsMarkers[hex].setLatLng(pos);
+        m.setLatLng(pos);
+      }
+      // p[3..6]: alt, callsign, origin, destination for whichever sample is
+      // currently "playing" for this aircraft - refreshed every tick so the
+      // label tracks altitude/route changes along the flight, not just position.
+      const lbl = trackPointLabel(hex, p[3], p[4], p[5], p[6]);
+      m._aeroblipLabel = lbl;
+      m.setPopupContent(lbl);
+      if (statsLabelsOn) {
+        if (m.getTooltip()) m.setTooltipContent(lbl);
+        else m.bindTooltip(lbl, { permanent: true, direction: "top", offset: [0, -4],
+                                   opacity: 0.9, className: "track-tooltip" }).openTooltip();
       }
     } else if (statsMarkers[hex]) {
       statsMap.removeLayer(statsMarkers[hex]);
