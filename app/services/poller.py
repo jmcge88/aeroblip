@@ -201,11 +201,13 @@ class OverheadPoller:
         return bool(self._listeners)
 
     def subscribe(self, lat: float, lon: float, overhead_nm: float,
-                  area_nm: float) -> asyncio.Queue:
+                  area_nm: float, owner: str = "default") -> asyncio.Queue:
         """Register a websocket client. Every push it receives is rendered for
-        its exact home via snapshot_for(), not the shared poll centre."""
+        its exact home via snapshot_for(), not the shared poll centre - and
+        for its own owner, so watch-rule matches never leak between callers
+        sharing this cell's poller."""
         q: asyncio.Queue = asyncio.Queue(maxsize=4)
-        self._listeners[q] = (lat, lon, overhead_nm, area_nm)
+        self._listeners[q] = (lat, lon, overhead_nm, area_nm, owner)
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
@@ -230,8 +232,13 @@ class OverheadPoller:
         self._area_nm = max(self._area_nm, area_nm)
 
     def snapshot_for(self, lat: float, lon: float, overhead_nm: float,
-                     area_nm: float) -> dict:
+                     area_nm: float, owner: str = "default") -> dict:
         """The shared snapshot recomputed for one client's exact home.
+
+        `owner` (the caller's device token, or "default" when none) scopes
+        which watch-rule matches ride along: the poller detects matches for
+        every owner's rules against this one shared poll, but each client
+        only ever sees its own owner's events embedded in its own snapshot.
 
         Distance, bearing, the overhead flag and the sort order are derived
         from each aircraft's own lat/lon against the client's coordinates;
@@ -277,7 +284,7 @@ class OverheadPoller:
                 "sun": light_info(lat, lon, now),
                 # Recent watch-rule matches for this cell ride along so
                 # dashboards can toast/announce them without a new channel.
-                "watch_events": (self._watches.recent(self._cell)
+                "watch_events": (self._watches.recent(self._cell, owner)
                                  if self._watches else [])}
 
     async def run(self) -> None:

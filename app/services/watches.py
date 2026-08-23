@@ -16,6 +16,15 @@ or airline, or on the built-in detectors - "circling" (see poller), "squawk"
 (any 7500/7600/7700 in the area) and "new_type" (first-ever sighting of a
 type, from the spotting log). Modifiers: within_nm, overhead_only,
 golden_only.
+
+Rules are namespaced per caller ("owner" - the device token, or "default"
+for an unauthenticated caller when REQUIRE_DEVICE_TOKEN is off): each owner
+only ever sees and manages their own rules and matches. Detection itself
+still runs once per poll across every owner's rules together - the aircraft
+list is the same regardless of who's watching - only visibility is split.
+A rule added before this existed has no owner on disk and is treated as
+"default"; it stays reachable only to an unauthenticated caller (re-add it
+under a real token if you need it back under that token).
 """
 from __future__ import annotations
 
@@ -36,7 +45,8 @@ log = logging.getLogger(__name__)
 FIELDS = ("callsign", "registration", "hex", "type", "airline",
           "circling", "squawk", "new_type")
 VALUE_RE = re.compile(r"^[A-Za-z0-9 .\-]{0,32}$")
-MAX_RULES = 50
+MAX_RULES = 50  # per owner, not a fleet-wide total
+DEFAULT_OWNER = "default"
 # Don't re-notify the same (rule, airframe) pair while it hangs around; a
 # news helicopter matching "circling" for an hour is one event, not sixty.
 COOLDOWN_S = 6 * 3600
@@ -70,9 +80,9 @@ class WatchManager:
     def __init__(self, path: str | Path, client: httpx.AsyncClient):
         self._path = Path(path)
         self._client = client
-        self._rules: list[dict] = []
+        self._rules: list[dict] = []  # each carries "owner"; DEFAULT_OWNER if missing (legacy)
         self._fired: dict[tuple, float] = {}   # (rule_id, hex) -> last notify
-        self._recent: dict[str, list[dict]] = {}  # cell -> recent events
+        self._recent: dict[tuple, list[dict]] = {}  # (cell, owner) -> recent events
         try:
             if self._path.exists():
                 self._rules = json.loads(self._path.read_text())["rules"]
@@ -81,10 +91,10 @@ class WatchManager:
 
     # ---- rule management (REST) ------------------------------------------
 
-    def rules(self) -> list[dict]:
-        return self._rules
+    def rules(self, owner: str) -> list[dict]:
+        return [r for r in self._rules if r.get("owner", DEFAULT_OWNER) == owner]
 
-    def add(self, payload: dict) -> dict:
+    def add(self, owner: str, payload: dict) -> dict:
         field = payload.get("field")
         if field not in FIELDS:
             raise ValueError(f"field must be one of {', '.join(FIELDS)}")
@@ -93,11 +103,12 @@ class WatchManager:
             raise ValueError("value: letters/digits/spaces, max 32 chars")
         if field in ("callsign", "registration", "hex", "type", "airline") and not value:
             raise ValueError("value required for this field")
-        if len(self._rules) >= MAX_RULES:
+        if len(self.rules(owner)) >= MAX_RULES:
             raise ValueError("too many rules")
         within = payload.get("within_nm")
         rule = {
             "id": secrets.token_urlsafe(8),
+            "owner": owner,
             "field": field,
             "value": value,
             "within_nm": min(500.0, max(1.0, float(within))) if within else None,
@@ -108,9 +119,12 @@ class WatchManager:
         self._save()
         return rule
 
-    def remove(self, rule_id: str) -> bool:
+    def remove(self, owner: str, rule_id: str) -> bool:
+        """Only removes a rule actually owned by the caller - a guessed ID
+        belonging to someone else's rule is a no-op, not a 404 leak."""
         before = len(self._rules)
-        self._rules = [r for r in self._rules if r["id"] != rule_id]
+        self._rules = [r for r in self._rules
+                       if not (r["id"] == rule_id and r.get("owner", DEFAULT_OWNER) == owner)]
         if len(self._rules) != before:
             self._save()
             return True
@@ -125,17 +139,22 @@ class WatchManager:
 
     # ---- evaluation (poll loop) ------------------------------------------
 
-    def recent(self, cell: str) -> list[dict]:
-        """Events still worth showing, for embedding in snapshots."""
+    def recent(self, cell: str, owner: str) -> list[dict]:
+        """Events still worth showing for this owner, for embedding in the
+        snapshot rendered for their client."""
+        key = (cell, owner)
         cutoff = time.time() - RECENT_KEEP_S
-        events = [e for e in self._recent.get(cell, []) if e["ts"] >= cutoff]
-        self._recent[cell] = events
+        events = [e for e in self._recent.get(key, []) if e["ts"] >= cutoff]
+        self._recent[key] = events
         return events
 
     def check(self, cell: str, aircraft: list[dict], sun: dict,
               sighting_events: list[dict]) -> None:
-        """Evaluate every rule against one poll's aircraft. Matches are
-        recorded for snapshot embedding and dispatched to notifiers."""
+        """Evaluate every rule from every owner against one poll's aircraft -
+        the aircraft a poller sees don't depend on who's watching, so this
+        runs once regardless of how many owners have rules. Matches are
+        recorded per (cell, owner) for snapshot embedding, and dispatched to
+        that owner's notifiers."""
         if not self._rules:
             return
         new_types = {id(e["aircraft"]) for e in sighting_events
@@ -204,8 +223,9 @@ class WatchManager:
             "message": _describe(a),
             "aircraft": _clean(a),
         }
-        self._recent.setdefault(cell, []).append(event)
-        del self._recent[cell][:-MAX_RECENT]
+        key = (cell, rule.get("owner", DEFAULT_OWNER))
+        self._recent.setdefault(key, []).append(event)
+        del self._recent[key][:-MAX_RECENT]
         log.info("watch match [%s]: %s - %s", label, title, event["message"])
         # Fire-and-forget: a slow phone-push service must never stall a poll.
         asyncio.get_running_loop().create_task(self._notify(event))

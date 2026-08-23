@@ -14,6 +14,14 @@ Follows persist to DATA_DIR/follows.json and expire after EXPIRE_S. Oceanic
 flights drop off ADS-B coverage for hours; a follow that loses its aircraft
 keeps the last fix and reports "no coverage" rather than pretending the
 flight ceased to exist.
+
+Follows are namespaced per caller ("owner" - the device token, or "default"
+for an unauthenticated caller when REQUIRE_DEVICE_TOKEN is off): each owner
+manages and sees only their own follows, up to MAX_FOLLOWS each - it's a
+per-owner limit, not a fleet-wide total. The shared round-robin poll loop
+doesn't care about ownership at all; it just walks every (owner, callsign)
+pair on the same adsb.lol throttle budget everything else shares. A follow
+added before this existed has no owner on disk and is treated as "default".
 """
 from __future__ import annotations
 
@@ -41,6 +49,7 @@ CALLSIGN_RE = re.compile(r"^[A-Z0-9]{3,8}$")
 # adsb.lol's callsign endpoint only matches the ICAO-prefixed form (JST59)
 # a transponder actually broadcasts. See _normalise_iata_prefix below.
 _IATA_CALLSIGN_RE = re.compile(r"^([A-Z]{2})(\d[0-9A-Z]*)$")
+DEFAULT_OWNER = "default"
 EXPIRE_S = 24 * 3600
 LOST_AFTER_S = 600       # live -> no_coverage after this long without a fix
 LANDED_REMOVE_S = 1800   # landed follows clean themselves up
@@ -83,17 +92,23 @@ class FollowTracker:
         self._meta = meta
         self._standing = standing
         self._path = Path(path)
-        self._follows: dict[str, dict] = {}
-        self._rr: list[str] = []  # round-robin queue of callsigns to poll
+        self._follows: dict[str, dict[str, dict]] = {}  # owner -> callsign -> state
+        self._rr: list[tuple[str, str]] = []  # round-robin queue of (owner, callsign)
+        # (owner, callsign) -> untried ICAO candidates, for an ambiguous IATA
+        # code being disambiguated by live traffic - see _try_next_candidate.
+        self._iata_candidates: dict[tuple[str, str], list[str]] = {}
         self.updated: int | None = None
         try:
             if self._path.exists():
                 for f in json.loads(self._path.read_text())["follows"]:
                     if CALLSIGN_RE.fullmatch(f.get("callsign", "")):
                         # Self-heal a follow saved before _normalise_iata_prefix
-                        # existed - no reason to make someone re-add it.
+                        # existed - no reason to make someone re-add it. A
+                        # follow saved before per-owner isolation existed has
+                        # no "owner" field either; it lands in DEFAULT_OWNER.
                         cs = self._normalise_iata_prefix(f["callsign"])
-                        self._follows[cs] = self._new_state(
+                        owner = f.get("owner") or DEFAULT_OWNER
+                        self._follows.setdefault(owner, {})[cs] = self._new_state(
                             cs, f.get("added") or int(time.time()))
         except (OSError, ValueError, KeyError):
             log.exception("follows file unreadable - starting empty")
@@ -109,8 +124,9 @@ class FollowTracker:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(json.dumps({"follows": [
-                {"callsign": f["callsign"], "added": f["added"]}
-                for f in self._follows.values()]}))
+                {"owner": owner, "callsign": f["callsign"], "added": f["added"]}
+                for owner, follows in self._follows.items()
+                for f in follows.values()]}))
         except OSError:
             log.exception("follows file write failed")
 
@@ -130,35 +146,39 @@ class FollowTracker:
         icao = self._standing.airline_icao_for_iata(m.group(1))
         return icao + m.group(2) if icao else cs
 
-    def add(self, callsign: str) -> dict:
+    def add(self, owner: str, callsign: str) -> dict:
         cs = callsign.strip().upper()
         if not CALLSIGN_RE.fullmatch(cs):
             raise ValueError("callsign must be 3-8 letters/digits")
         cs = self._normalise_iata_prefix(cs)
-        if cs in self._follows:
-            return self._follows[cs]
-        if len(self._follows) >= config.MAX_FOLLOWS:
+        owned = self._follows.setdefault(owner, {})
+        if cs in owned:
+            return owned[cs]
+        if len(owned) >= config.MAX_FOLLOWS:
             raise TooManyFollows()
-        self._follows[cs] = self._new_state(cs, int(time.time()))
+        owned[cs] = self._new_state(cs, int(time.time()))
         self._save()
         self.updated = int(time.time())
         # First data now, not a round-robin cycle from now
-        asyncio.get_running_loop().create_task(self._poll_one_safe(cs))
-        return self._follows[cs]
+        asyncio.get_running_loop().create_task(self._poll_one_safe(owner, cs))
+        return owned[cs]
 
-    def remove(self, callsign: str) -> bool:
+    def remove(self, owner: str, callsign: str) -> bool:
         cs = callsign.strip().upper()
-        if self._follows.pop(cs, None) is None:
+        if self._follows.get(owner, {}).pop(cs, None) is None:
             return False
+        if not self._follows[owner]:
+            del self._follows[owner]
+        self._iata_candidates.pop((owner, cs), None)
         self._save()
         self.updated = int(time.time())
         return True
 
-    def snapshot_now(self) -> dict:
-        """Current follows with positions dead-reckoned to render time."""
+    def snapshot_now(self, owner: str) -> dict:
+        """This owner's follows, with positions dead-reckoned to render time."""
         now = time.time()
         out = []
-        for f in self._follows.values():
+        for f in self._follows.get(owner, {}).values():
             f = dict(f)
             a = f.get("aircraft")
             if a and f.get("last_seen") and f["status"] == "live":
@@ -173,14 +193,18 @@ class FollowTracker:
 
     # ---- polling ----------------------------------------------------------
 
+    def _all_pairs(self) -> list[tuple[str, str]]:
+        return [(owner, cs) for owner, follows in self._follows.items() for cs in follows]
+
     async def run(self) -> None:
         while True:
             try:
                 self._expire()
-                if self._rr == [] or not set(self._rr) <= set(self._follows):
-                    self._rr = list(self._follows)
+                pairs = self._all_pairs()
+                if self._rr == [] or not set(self._rr) <= set(pairs):
+                    self._rr = pairs
                 if self._rr:
-                    await self._poll_one_safe(self._rr.pop(0))
+                    await self._poll_one_safe(*self._rr.pop(0))
             except Exception:
                 log.exception("follow poll failed")
             await asyncio.sleep(config.FOLLOW_POLL_SECONDS
@@ -188,29 +212,41 @@ class FollowTracker:
 
     def _expire(self) -> None:
         now = time.time()
-        for cs, f in list(self._follows.items()):
-            landed_done = (f["status"] == "landed" and f.get("landed_at")
-                           and now - f["landed_at"] > LANDED_REMOVE_S)
-            if now - f["added"] > EXPIRE_S or landed_done:
-                del self._follows[cs]
-                self._save()
-                self.updated = int(now)
-                log.info("follow expired: %s", cs)
+        any_expired = False
+        for owner, follows in list(self._follows.items()):
+            for cs, f in list(follows.items()):
+                landed_done = (f["status"] == "landed" and f.get("landed_at")
+                               and now - f["landed_at"] > LANDED_REMOVE_S)
+                if now - f["added"] > EXPIRE_S or landed_done:
+                    del follows[cs]
+                    self._iata_candidates.pop((owner, cs), None)
+                    any_expired = True
+                    log.info("follow expired: %s (owner=%s)", cs, owner)
+            if not follows:
+                del self._follows[owner]
+        if any_expired:
+            self.updated = int(now)
+            self._save()
 
-    async def _poll_one_safe(self, cs: str) -> None:
+    async def _poll_one_safe(self, owner: str, cs: str) -> None:
         try:
-            await self._poll_one(cs)
+            await self._poll_one(owner, cs)
         except Exception:
-            log.exception("follow poll failed for %s", cs)
+            log.exception("follow poll failed for %s (owner=%s)", cs, owner)
 
-    async def _poll_one(self, cs: str) -> None:
-        f = self._follows.get(cs)
+    async def _poll_one(self, owner: str, cs: str) -> None:
+        f = self._follows.get(owner, {}).get(cs)
         if f is None:
             return
         if config.DEMO_MODE:
             self._demo_fill(f)
             self.updated = int(time.time())
             return
+        # Route/airline are knowable independently of live position - a
+        # follow added for a flight that's already landed, hasn't departed
+        # yet, or is crossing an oceanic coverage gap should still be able
+        # to show its route, so this no longer waits for a position fix.
+        await self._ensure_route(f)
         if radar.penalised(BUDGET):
             return
         await radar.throttle(BUDGET)
@@ -223,15 +259,16 @@ class FollowTracker:
                       if ac.get("lat") is not None]
         now = int(time.time())
         if not candidates:
+            if await self._try_next_candidate(owner, cs, f):
+                return  # renamed to the resolved callsign; picked up next cycle
             if (f["status"] == "live" and f["last_seen"]
                     and now - f["last_seen"] > LOST_AFTER_S):
                 f["status"] = "no_coverage"
-                self.updated = now
+            self.updated = now  # a route may have just resolved even with no fix
             return
         # Duplicate callsigns exist; take the freshest position
         ac = min(candidates, key=lambda a: a.get("seen_pos") or 0)
         a = self._normalize(ac)
-        await self._ensure_route(f)
         on_ground = ac.get("alt_baro") == "ground"
         f["aircraft"] = a
         f["last_seen"] = now
@@ -245,6 +282,64 @@ class FollowTracker:
         else:
             f["status"] = "live"
         self.updated = now
+
+    async def _try_next_candidate(self, owner: str, cs: str, f: dict) -> bool:
+        """The literal callsign found nothing, and its IATA prefix covers
+        several real airlines (QF alone covers six) - _normalise_iata_prefix
+        already declined to guess at add() time rather than risk querying
+        the wrong one. Instead of guessing, find out: work through the real
+        candidates one at a time, one extra throttled request per poll (this
+        follow's normal one plus this), so disambiguation costs the same
+        shared adsb.lol budget as any other follow, just takes a few more
+        minutes to land. Renames the follow to the winning ICAO callsign as
+        soon as one actually has live traffic - permanently, so every later
+        poll (and the route lookup) goes straight to the right one.
+
+        Returns True if a candidate was tried this call (whether or not it
+        won) - the caller should stop rather than also touch self.updated,
+        since a rename already means a state change happened.
+        """
+        m = _IATA_CALLSIGN_RE.match(cs)
+        if not m:
+            return False
+        key = (owner, cs)
+        if key not in self._iata_candidates:
+            iata, number = m.group(1), m.group(2)
+            icaos = self._standing.airline_icaos_for_iata(iata)
+            queue = [icao + number for icao in icaos if icao + number != cs]
+            if not queue:
+                return False  # unknown IATA code - nothing to try
+            self._iata_candidates[key] = queue
+        queue = self._iata_candidates[key]
+        candidate = queue.pop(0)
+        if not queue:
+            del self._iata_candidates[key]
+        if radar.penalised(BUDGET):
+            return True  # still "handled" - don't fall through to no_coverage logic
+        await radar.throttle(BUDGET)
+        try:
+            resp = await self._client.get(CALLSIGN_URL.format(cs=candidate), timeout=15)
+            if resp.status_code in (403, 429):
+                radar.penalise(BUDGET, resp.headers.get("Retry-After"))
+            resp.raise_for_status()
+            radar.clear_penalty(BUDGET)
+            hits = [ac for ac in (resp.json().get("ac") or []) if ac.get("lat") is not None]
+        except Exception as exc:
+            log.warning("candidate callsign check failed for %s: %s", candidate, exc)
+            return True
+        if not hits:
+            self.updated = int(time.time())
+            return True
+        owned = self._follows.get(owner, {})
+        if cs in owned:
+            state = owned.pop(cs)
+            state["callsign"] = candidate
+            owned[candidate] = state
+            self._iata_candidates.pop(key, None)
+            self._save()
+            self.updated = int(time.time())
+            log.info("follow %s (owner=%s) resolved to %s", cs, owner, candidate)
+        return True
 
     def _normalize(self, ac: dict) -> dict:
         alt = ac.get("alt_baro")

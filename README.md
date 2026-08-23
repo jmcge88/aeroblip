@@ -74,23 +74,34 @@ N NM, overhead only, golden light only. Matches:
 
 The same aircraft won't re-notify the same rule for 6 hours.
 
+Watch rules (and follows, below) are namespaced per caller: each device
+token — or an unauthenticated caller, when `REQUIRE_DEVICE_TOKEN` is off —
+manages and sees only its own rules and matches. One shared poll loop still
+does the actual detection work once per location regardless of how many
+tokens have rules; only visibility is split.
+
 ## Follow a flight
 
-Tap **✈** and enter a callsign *as broadcast* (`QFA12`, not `QF12`) — though
-if you type the IATA flight number as shown on a boarding pass or Google
-Flights (`JQ59`), the server silently corrects it when the airline code is
-unambiguous (`JQ` → Jetstar's `JST`). Some IATA codes cover several
-codeshare/regional operators under one brand (`QF` alone covers six real
-airlines for Qantas/QantasLink) — those are left as typed rather than
-guessed, since a wrong guess would query the wrong airline's callsign
-entirely; enter the ICAO form yourself in that case. The
-server tracks it anywhere in the world via adsb.lol's callsign endpoint —
-follows are polled round-robin, one upstream request per minute total, and
-dead-reckoned between polls. The FOLLOWING page shows a world map with the
-dashed great-circle route, live position, progress bar, distance to go and
-ETA. Landings are detected and announced; oceanic coverage gaps honestly show
-"NO COVERAGE" with the last known position. Follows expire after 24 h and are
-capped by `MAX_FOLLOWS`.
+Tap **✈** and enter a callsign. Type the IATA flight number as shown on a
+boarding pass or Google Flights (`JQ59`) and the server figures out the rest:
+if the airline code is unambiguous it corrects it immediately (`JQ` →
+Jetstar's `JST`); if the code covers several real airlines under one brand
+(`QF` alone covers six — Qantas mainline plus five QantasLink regional
+partners) it can't guess safely, so instead it tries each real candidate
+against live traffic, one per poll, and adopts whichever one is actually
+flying right now — same idea as typing the ICAO form yourself (`QFA12`), just
+automatic and safe against every airline with this problem, not only the
+famous ones. A route can resolve even before any live position does (already
+landed, not yet departed, a coverage gap) — position and route are looked up
+independently.
+
+The server tracks a follow anywhere in the world via adsb.lol's callsign
+endpoint — follows are polled round-robin, one upstream request per minute
+total, and dead-reckoned between polls. The FOLLOWING page shows a world map
+with the dashed great-circle route, live position, progress bar, distance to
+go and ETA. Landings are detected and announced; oceanic coverage gaps
+honestly show "NO COVERAGE" with the last known position. Follows expire
+after 24 h and are capped by `MAX_FOLLOWS` **per token**, not fleet-wide.
 
 ## "What's that plane?" (phone)
 

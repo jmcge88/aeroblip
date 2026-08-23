@@ -252,30 +252,35 @@ class StandingDataMeta:
             " WHERE icao=? OR iata=? OR code=? LIMIT 1", code, code, code)
         return dict(row) if row is not None else None
 
-    def airline_icao_for_iata(self, iata: str) -> str | None:
-        """3-letter ICAO prefix for a 2-letter IATA airline code (JQ -> JST).
-        Used to correct a follow callsign entered as the IATA flight number -
-        what humans and Google Flights show - rather than the ICAO-prefixed
-        callsign a transponder actually broadcasts.
-
-        Many IATA codes are shared across a mainline carrier and its
-        regional/codeshare operators - QF alone covers six distinct airlines
-        in this data (Qantas mainline plus five regional partners flying
-        QantasLink-branded routes). Guessing wrong would feed an actively
-        incorrect callsign to adsb.lol, so this only returns an answer when
-        exactly one ICAO code carries that IATA code; anything ambiguous
-        returns None and the caller leaves the callsign as typed.
-        """
+    def airline_icaos_for_iata(self, iata: str) -> list[str]:
+        """Every distinct ICAO prefix sharing a 2-letter IATA airline code.
+        Usually one (JQ -> [JST]); some IATA codes are shared across a
+        mainline carrier and its regional/codeshare operators - QF alone
+        covers six distinct airlines in this data (Qantas mainline plus
+        five regional partners flying QantasLink-branded routes). An empty
+        list means the code is unknown (or standing-data isn't ready yet)."""
         if self._conn is None:
-            return None
+            return []
         try:
             rows = self._conn.execute(
                 "SELECT DISTINCT icao FROM airlines WHERE iata=? AND icao!=''",
                 (iata.strip().upper(),)).fetchall()
         except sqlite3.Error as exc:
             log.warning("standing-data query failed: %s", exc)
-            return None
-        return rows[0]["icao"] if len(rows) == 1 else None
+            return []
+        return [r["icao"] for r in rows]
+
+    def airline_icao_for_iata(self, iata: str) -> str | None:
+        """3-letter ICAO prefix for a 2-letter IATA airline code, only when
+        unambiguous. Used to correct a follow callsign entered as the IATA
+        flight number - what humans and Google Flights show - rather than
+        the ICAO-prefixed callsign a transponder actually broadcasts.
+        Guessing wrong among several candidates would feed an actively
+        incorrect callsign to adsb.lol, so an ambiguous code (see
+        airline_icaos_for_iata) returns None here; FollowTracker resolves
+        those by trying each candidate against live traffic instead."""
+        icaos = self.airline_icaos_for_iata(iata)
+        return icaos[0] if len(icaos) == 1 else None
 
     def _airport(self, code: str) -> tuple[str, str | None]:
         """(display code, city/name) for a schema-01 airport code."""

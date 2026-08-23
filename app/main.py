@@ -212,6 +212,17 @@ async def require_device(request: Request) -> None:
     devices.touch(token, request.headers.get("X-FW-Version"))
 
 
+def owner_for(request: Request) -> str:
+    """Namespace for follows/watches: the caller's device token, or
+    "default" for an unauthenticated caller (personal installs with
+    REQUIRE_DEVICE_TOKEN off). By the time this runs, require_device has
+    already rejected an invalid token when one is required, so any token
+    seen here is either genuine or the feature is off entirely."""
+    return (request.headers.get("X-Device-Token")
+            or request.query_params.get("token")
+            or "default")
+
+
 def require_admin(request: Request) -> None:
     # compare_digest, not ==: a plain compare leaks the matching prefix length
     # through timing, and this token is the only thing guarding the fleet.
@@ -230,7 +241,7 @@ async def health():
 async def overhead(request: Request):
     poller = await poller_or_429(request.query_params)
     lat, lon, radius, area, _ = parse_location(request.query_params)
-    return poller.snapshot_for(lat, lon, radius, area)
+    return poller.snapshot_for(lat, lon, radius, area, owner_for(request))
 
 
 @app.get("/api/board", dependencies=[Depends(require_device)])
@@ -293,25 +304,26 @@ async def wx_endpoint(request: Request):
 
 
 @app.get("/api/follow", dependencies=[Depends(require_device)])
-async def list_follows():
-    """Followed flights, positions dead-reckoned to now."""
-    return follow.snapshot_now()
+async def list_follows(request: Request):
+    """This caller's followed flights, positions dead-reckoned to now."""
+    return follow.snapshot_now(owner_for(request))
 
 
 @app.post("/api/follow", dependencies=[Depends(require_device)])
-async def add_follow(payload: dict):
+async def add_follow(request: Request, payload: dict):
+    owner = owner_for(request)
     try:
-        follow.add(str(payload.get("callsign") or ""))
+        follow.add(owner, str(payload.get("callsign") or ""))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except TooManyFollows:
         raise HTTPException(status_code=429, detail="too many followed flights")
-    return {"ok": True, "follows": follow.snapshot_now()}
+    return {"ok": True, "follows": follow.snapshot_now(owner)}
 
 
 @app.delete("/api/follow/{callsign}", dependencies=[Depends(require_device)])
-async def delete_follow(callsign: str):
-    if not follow.remove(callsign):
+async def delete_follow(request: Request, callsign: str):
+    if not follow.remove(owner_for(request), callsign):
         raise HTTPException(status_code=404)
     return {"ok": True}
 
@@ -326,22 +338,23 @@ async def sky_endpoint(request: Request):
 
 @app.get("/api/watches", dependencies=[Depends(require_device)])
 async def list_watches(request: Request):
-    """Watch rules plus this location's recent matches."""
+    """This caller's watch rules plus this location's recent matches of theirs."""
     lat, lon, _, _, _ = parse_location(request.query_params)
-    return {"rules": watches.rules(), "recent": watches.recent(cell_key(lat, lon))}
+    owner = owner_for(request)
+    return {"rules": watches.rules(owner), "recent": watches.recent(cell_key(lat, lon), owner)}
 
 
 @app.post("/api/watches", dependencies=[Depends(require_device)])
-async def add_watch(payload: dict):
+async def add_watch(request: Request, payload: dict):
     try:
-        return {"ok": True, "rule": watches.add(payload)}
+        return {"ok": True, "rule": watches.add(owner_for(request), payload)}
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.delete("/api/watches/{rule_id}", dependencies=[Depends(require_device)])
-async def delete_watch(rule_id: str):
-    if not watches.remove(rule_id):
+async def delete_watch(request: Request, rule_id: str):
+    if not watches.remove(owner_for(request), rule_id):
         raise HTTPException(status_code=404)
     return {"ok": True}
 
@@ -520,13 +533,16 @@ async def fw_latest():
 
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
+    # Same owner concept as owner_for() (a plain Request, not available for a
+    # websocket handshake) - the caller's device token, or "default".
+    owner = (websocket.headers.get("x-device-token")
+             or websocket.query_params.get("token")
+             or "default")
     if config.REQUIRE_DEVICE_TOKEN:
-        token = (websocket.headers.get("x-device-token")
-                 or websocket.query_params.get("token"))
-        if not devices.valid(token):
+        if not devices.valid(owner if owner != "default" else None):
             await websocket.close(code=4403)
             return
-        devices.touch(token)
+        devices.touch(owner)
     location = parse_location(websocket.query_params)
     lat, lon, radius, area, airport = location
     try:
@@ -537,16 +553,17 @@ async def ws(websocket: WebSocket):
         return
     await websocket.accept()
     # The poller is shared per grid cell; subscribing with this client's exact
-    # home makes every push arrive already rendered for it (snapshot_for).
-    queue = poller.subscribe(lat, lon, radius, area)
+    # home (and owner) makes every push arrive already rendered for it, watch
+    # events included, via snapshot_for().
+    queue = poller.subscribe(lat, lon, radius, area, owner)
     last_board_update = None
     last_alerts_update = None
     try:
         await websocket.send_json({"type": "overhead",
-                                   "data": poller.snapshot_for(lat, lon, radius, area)})
+                                   "data": poller.snapshot_for(lat, lon, radius, area, owner)})
         await websocket.send_json({"type": "board", "data": board.snapshot})
         await websocket.send_json({"type": "alerts", "data": alerts.snapshot_for(lat, lon)})
-        await websocket.send_json({"type": "follow", "data": follow.snapshot_now()})
+        await websocket.send_json({"type": "follow", "data": follow.snapshot_now(owner)})
         last_board_update = board.snapshot.get("updated")
         last_alerts_update = alerts.snapshot.get("updated")
         last_follow_update = follow.updated
@@ -566,10 +583,10 @@ async def ws(websocket: WebSocket):
                 await websocket.send_json(
                     {"type": "alerts", "data": alerts.snapshot_for(lat, lon)})
             # Same idea for followed flights: animate while any is active.
-            if follow.updated != last_follow_update or follow.snapshot_now()["follows"]:
+            if follow.updated != last_follow_update or follow.snapshot_now(owner)["follows"]:
                 last_follow_update = follow.updated
                 await websocket.send_json({"type": "follow",
-                                           "data": follow.snapshot_now()})
+                                           "data": follow.snapshot_now(owner)})
     except WebSocketDisconnect:
         pass
     finally:
