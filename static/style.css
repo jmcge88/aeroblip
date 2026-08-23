@@ -616,6 +616,48 @@ td.board-note {
 @keyframes toast-in { from { transform: translateX(30px); opacity: 0; } }
 
 /* ---------- first-load spinner (nearby view) ---------- */
+/* Follow-a-flight view: info column + world map */
+.fl-body {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 2vw;
+  height: 100%;
+  min-height: 0;
+}
+#follow-info { display: flex; flex-direction: column; gap: 1.4vh; min-width: 0; }
+.fl-status { font-size: 2vh; letter-spacing: 0.25em; color: var(--text-dim); }
+.fl-status-live { color: var(--green); }
+.fl-status-no_coverage { color: var(--amber); }
+.fl-status-landed { color: var(--text-dim); }
+.fl-callsign {
+  font-size: 8vh; font-weight: 700; color: var(--amber);
+  letter-spacing: 0.06em; line-height: 1;
+}
+.fl-route { font-size: 4vh; color: var(--text); }
+.fl-route .arrow { color: var(--text-dim); }
+.fl-cities { font-size: 2.2vh; color: var(--text-dim); }
+.fl-progress {
+  height: 1.6vh; background: var(--panel); border-radius: 0.8vh;
+  overflow: hidden; border: 1px solid #1c2530;
+}
+.fl-bar { height: 100%; background: var(--green); border-radius: 0.8vh; }
+.fl-progress-pct { font-size: 1.8vh; color: var(--text-dim); margin-top: -0.6vh; }
+.fl-eta { font-size: 2.4vh; color: var(--amber); letter-spacing: 0.08em; }
+.fl-eta:empty { display: none; }
+#follow-map {
+  border: 1px solid var(--panel);
+  border-radius: 8px;
+  min-height: 40vh;
+  background: var(--panel);
+}
+.fl-chips { display: flex; gap: 1vw; flex-wrap: wrap; margin-top: 1vh; }
+.fl-chip {
+  background: none; border: 1px solid var(--text-dim); color: var(--text-dim);
+  font-family: var(--mono); font-size: 2vh; letter-spacing: 0.08em;
+  padding: 0.4vh 1.4vw; border-radius: 0.6vh; cursor: pointer;
+}
+.fl-chip.on { color: var(--amber); border-color: var(--amber); }
+
 /* Spotting log overlay: stats tiles, hourly chart, life list, track map */
 #stats-overlay {
   position: fixed; inset: 0; z-index: 900;

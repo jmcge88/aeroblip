@@ -13,7 +13,7 @@
        internet to render its own map chrome. static/vendor/README.md records
        the version and the upstream SRI hashes these files were checked against. -->
   <link rel="stylesheet" href="/static/vendor/leaflet.css?v=1.9.4">
-  <link rel="stylesheet" href="/static/style.css?v=23">
+  <link rel="stylesheet" href="/static/style.css?v=24">
 </head>
 <body>
   <header id="header">
@@ -39,6 +39,14 @@
       <div id="aircraft-list"></div>
       <div id="radar-empty" class="hidden">
         <div class="empty-msg">CLEAR SKIES</div>
+      </div>
+    </section>
+
+    <!-- Follow-a-flight: a followed callsign tracked anywhere in the world -->
+    <section id="follow-view" class="view hidden">
+      <div class="fl-body">
+        <div id="follow-info"></div>
+        <div id="follow-map"></div>
       </div>
     </section>
 
@@ -74,6 +82,7 @@
     <span id="data-credit" style="opacity:.55">flight data &copy;
       <a href="https://adsb.lol" style="color:inherit">adsb.lol</a> contributors (ODbL)</span>
     <span id="footer-nav"><span id="flip-count"></span><nav id="page-dots"></nav>
+      <button id="follow-btn" class="ftr-btn" title="Follow a flight">&#9992;</button>
       <button id="voice-btn" class="ftr-btn" title="Voice announcements">&#128263;</button>
       <button id="stats-btn" class="ftr-btn" title="Spotting log">&#9636;</button>
       <button id="watch-btn" class="ftr-btn" title="Watch list">&#9673;</button>
@@ -93,6 +102,18 @@
       <button id="stats-close">&#10005;</button>
     </div>
     <div id="stats-body"><div class="empty-msg loading"><span class="spinner"></span>LOADING…</div></div>
+  </div>
+
+  <!-- Follow a flight: per-callsign global trackers on the server -->
+  <div id="follow-panel" class="ftr-panel hidden">
+    <h3>FOLLOW A FLIGHT</h3>
+    <div id="follow-list"></div>
+    <label for="follow-cs">Callsign (ICAO, e.g. QFA12)</label>
+    <input id="follow-cs" maxlength="8" placeholder="QFA12">
+    <div class="loc-row">
+      <button id="follow-add" type="button">Follow</button>
+    </div>
+    <p id="follow-note"></p>
   </div>
 
   <!-- Watch list: server-side rules; matches toast here and push via
@@ -144,6 +165,6 @@
   </div>
 
   <script src="/static/vendor/leaflet.js?v=1.9.4"></script>
-  <script src="/static/app.js?v=31"></script>
+  <script src="/static/app.js?v=32"></script>
 </body>
 </html>

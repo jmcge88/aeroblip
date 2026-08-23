@@ -22,6 +22,7 @@ from app.providers.standing_data import StandingDataMeta
 from app.providers.wx import WxProvider
 from app.services.alerts import GlobalAlerts
 from app.services.devices import DeviceRegistry
+from app.services.follow import FollowTracker, TooManyFollows
 from app.services.hub import LocationHub, TooManyLocations, cell_key
 from app.services.iss import IssTracker
 from app.services.meta_cache import CachedMeta
@@ -46,6 +47,7 @@ watches: WatchManager
 standing_meta: StandingDataMeta
 wx: WxProvider
 iss: IssTracker
+follow: FollowTracker
 _wx_cache: dict[str, tuple[float, dict | None]] = {}
 WX_TTL = 600  # seconds; aviationweather.gov is free but not ours to hammer
 devices = DeviceRegistry(str(Path(config.DATA_DIR) / "devices.db"))
@@ -85,11 +87,13 @@ async def lifespan(app: FastAPI):
         # airframes don't vary by location, so the fleet must not re-buy them
         # per device, and they must survive reaping and restarts.
         meta = meta_cache = CachedMeta(meta, Path(config.DATA_DIR) / "meta_cache.json")
-        global sightings, watches, standing_meta, wx, iss
+        global sightings, watches, standing_meta, wx, iss, follow
         standing_meta = standing
         wx = WxProvider(client)
         iss = IssTracker(client, Path(config.DATA_DIR) / "iss_tle.txt")
         watches = WatchManager(Path(config.DATA_DIR) / "watches.json", client)
+        follow = FollowTracker(client, meta, standing,
+                               Path(config.DATA_DIR) / "follows.json")
         if config.SIGHTINGS_ENABLED:
             # Demo traffic goes to its own log - fake Qantas flights must
             # never seed a real life list.
@@ -108,6 +112,7 @@ async def lifespan(app: FastAPI):
         # on demand via poller_for anyway (see the 429s this used to cause).
         tasks = [asyncio.create_task(alerts.run()), asyncio.create_task(hub.reaper()),
                  asyncio.create_task(standing.run())]
+        tasks.append(asyncio.create_task(follow.run()))
         if sightings is not None:
             tasks.append(asyncio.create_task(sightings.run()))
         try:
@@ -285,6 +290,30 @@ async def wx_endpoint(request: Request):
     if cached is None:
         raise HTTPException(status_code=404, detail="no weather for station")
     return cached
+
+
+@app.get("/api/follow", dependencies=[Depends(require_device)])
+async def list_follows():
+    """Followed flights, positions dead-reckoned to now."""
+    return follow.snapshot_now()
+
+
+@app.post("/api/follow", dependencies=[Depends(require_device)])
+async def add_follow(payload: dict):
+    try:
+        follow.add(str(payload.get("callsign") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except TooManyFollows:
+        raise HTTPException(status_code=429, detail="too many followed flights")
+    return {"ok": True, "follows": follow.snapshot_now()}
+
+
+@app.delete("/api/follow/{callsign}", dependencies=[Depends(require_device)])
+async def delete_follow(callsign: str):
+    if not follow.remove(callsign):
+        raise HTTPException(status_code=404)
+    return {"ok": True}
 
 
 @app.get("/api/sky", dependencies=[Depends(require_device)])
@@ -517,8 +546,10 @@ async def ws(websocket: WebSocket):
                                    "data": poller.snapshot_for(lat, lon, radius, area)})
         await websocket.send_json({"type": "board", "data": board.snapshot})
         await websocket.send_json({"type": "alerts", "data": alerts.snapshot_for(lat, lon)})
+        await websocket.send_json({"type": "follow", "data": follow.snapshot_now()})
         last_board_update = board.snapshot.get("updated")
         last_alerts_update = alerts.snapshot.get("updated")
+        last_follow_update = follow.updated
         while True:
             snapshot = await queue.get()
             poller.touch()
@@ -534,6 +565,11 @@ async def ws(websocket: WebSocket):
                 last_alerts_update = alerts.snapshot.get("updated")
                 await websocket.send_json(
                     {"type": "alerts", "data": alerts.snapshot_for(lat, lon)})
+            # Same idea for followed flights: animate while any is active.
+            if follow.updated != last_follow_update or follow.snapshot_now()["follows"]:
+                last_follow_update = follow.updated
+                await websocket.send_json({"type": "follow",
+                                           "data": follow.snapshot_now()})
     except WebSocketDisconnect:
         pass
     finally:

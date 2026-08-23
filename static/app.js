@@ -40,6 +40,7 @@ let overhead = overheadRaw;   // dead-reckoned view, rebuilt from raw each rende
 let board = { arrivals: [], departures: [] };
 let alertsRaw = { aircraft: [] }; // global squawk-7700 watch (worldwide)
 let alerts = alertsRaw;
+let followsData = { follows: [] }; // follow-a-flight trackers (server-side)
 let overheadLoaded = false;   // first payload received: empty now means CLEAR SKIES
 let accessDenied = false;     // server 403'd us (REQUIRE_DEVICE_TOKEN without a token)
 let lastTraffic = 0;          // timestamp of last non-empty radar snapshot
@@ -208,6 +209,10 @@ function connect() {
       announceAlerts(msg.data);
       alertsRaw = msg.data;
       render();
+    } else if (msg.type === "follow") {
+      announceFollows(msg.data);
+      followsData = msg.data;
+      render();
     }
   };
   ws.onopen = () => {
@@ -281,6 +286,7 @@ function buildPages() {
   if (alertAircraft()) pages.push("emergency");
   if (spotlightDue()) pages.push("air");
   pages.push("nearby");
+  if (followsData.follows.length) pages.push("follow");
   if (boardRows("departures").length) pages.push("departures");
   if (boardRows("arrivals").length) pages.push("arrivals");
   return pages;
@@ -342,6 +348,7 @@ function choosePage() {
   if (anyAlert) rot.push("emergency");
   if (overhead.aircraft.length > 0 || (lastTraffic && now - lastTraffic < RADAR_LINGER_MS))
     rot.push("nearby");
+  if (followsData.follows.length) rot.push("follow");
   if (boardRows("departures").length) rot.push("departures");
   if (boardRows("arrivals").length) rot.push("arrivals");
   if (!rot.length) { currentPage = "nearby"; return null; } // CLEAR SKIES placeholder
@@ -419,6 +426,7 @@ function render() {
   // expired between rotation ticks (plane left the ring, linger ran out)
   else if (page === "air") view = spotlightDue() ? "spotlight" : "nearby";
   else if (page === "nearby") view = "nearby";
+  else if (page === "follow") view = followsData.follows.length ? "follow" : "nearby";
   else view = "board";
   if (FORCED_VIEW === "spotlight") view = "spotlight";
   else if (FORCED_VIEW === "nearby") view = "nearby";
@@ -427,6 +435,7 @@ function render() {
   els.spotlightView.classList.toggle("hidden", view !== "spotlight");
   els.radarView.classList.toggle("hidden", view !== "nearby");
   els.boardView.classList.toggle("hidden", view !== "board");
+  document.getElementById("follow-view").classList.toggle("hidden", view !== "follow");
 
   if (view === "emergency") {
     const a = alertAircraft();
@@ -438,6 +447,9 @@ function render() {
   } else if (view === "nearby") {
     els.viewTitle.textContent = "NEARBY TRAFFIC";
     renderRadar();
+  } else if (view === "follow") {
+    els.viewTitle.textContent = "FOLLOWING";
+    renderFollow();
   } else {
     els.viewTitle.textContent = board.airport ? `${board.airport.iata} AIRPORT` : "AIRPORT";
     renderBoard(page === "departures");
@@ -611,12 +623,12 @@ function destPoint(lat, lon, bearingDeg, distNm) {
   return [(p2 * 180) / Math.PI, (l2 * 180) / Math.PI];
 }
 
-function planeDivIcon(track) {
+function planeDivIcon(track, color = "#ff5c5c") {
   return L.divIcon({
     className: "em-plane-icon",
     iconSize: [30, 30],
     html: `<svg viewBox="0 0 30 30" style="transform:rotate(${Math.round(track ?? 0)}deg)">
-             <path d="M15,3 L24,25 L15,19.5 L6,25 Z" fill="#ff5c5c" stroke="#0a0e14" stroke-width="1.5"/>
+             <path d="M15,3 L24,25 L15,19.5 L6,25 Z" fill="${color}" stroke="#0a0e14" stroke-width="1.5"/>
            </svg>`,
   });
 }
@@ -950,6 +962,216 @@ function statusClass(status) {
   if (s.includes("expected") || s.includes("checkin") || s.includes("check-in") || s.includes("gate")) return "status-ontime";
   return "";
 }
+
+/* ---------- Follow-a-flight view + panel ----------------------------------
+   The server tracks each followed callsign globally and pushes "follow"
+   frames; this renders the selected one: world map with the great-circle
+   route, progress bar, ETA. The map skeleton lives in index.html so Leaflet
+   keeps its instance across renders. */
+let selectedFollowCs = null;
+let followMap = null, flPlane = null, flLine = null, flEnds = [];
+
+function fmtDuration(s) {
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return h > 0 ? `${h} H ${String(m).padStart(2, "0")} MIN` : `${m} MIN`;
+}
+
+const FOLLOW_STATUS = {
+  waiting: "WAITING FOR DATA",
+  live: "LIVE",
+  no_coverage: "NO COVERAGE (LAST KNOWN POSITION)",
+  landed: "LANDED",
+};
+
+function renderFollow() {
+  const list = followsData.follows;
+  const f = list.find((x) => x.callsign === selectedFollowCs) ?? list[0];
+  const info = document.getElementById("follow-info");
+  if (!f) { setHTML(info, ""); return; }
+  selectedFollowCs = f.callsign;
+
+  const a = f.aircraft || {};
+  const r = f.route || {};
+  const route = r.origin
+    ? `${esc(r.origin)} <span class="arrow">→</span> ${esc(r.destination ?? "?")}`
+    : "ROUTE UNKNOWN";
+  const cities = r.origin_name
+    ? `${esc(r.origin_name)} → ${esc(r.destination_name ?? "")}` : "";
+  const eta = f.eta_utc
+    ? `ETA ${new Date(f.eta_utc * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`
+      + (f.eta_s != null ? ` (${fmtDuration(f.eta_s)})` : "") : "";
+  const togo = f.dist_to_dest_nm != null
+    ? `${Math.round(f.dist_to_dest_nm).toLocaleString()} NM TO GO` : "";
+  const facts = [
+    ["AIRCRAFT", esc(a.description || a.type || "–")],
+    ["REGISTRATION", esc(a.registration ?? "–")],
+    ["ALTITUDE", a.altitude_ft != null ? `${Math.round(a.altitude_ft).toLocaleString()} ft` : "–"],
+    ["SPEED", a.ground_speed_kt != null ? `${Math.round(a.ground_speed_kt)} kt` : "–"],
+    ["HEADING", a.heading_cardinal ? esc(a.heading_cardinal) : "–"],
+    ["AIRLINE", esc(r.airline ?? "–")],
+  ].map(([k, v]) => `<div class="sp-fact"><label>${k}</label><span>${v}</span></div>`).join("");
+  const chips = list.length > 1 ? `<div class="fl-chips">${list.map((x) =>
+    `<button class="fl-chip${x.callsign === f.callsign ? " on" : ""}" data-cs="${esc(x.callsign)}">${esc(x.callsign)}</button>`).join("")}</div>` : "";
+
+  setHTML(info, `
+    <div class="fl-status fl-status-${esc(f.status)}">${FOLLOW_STATUS[f.status] ?? esc(f.status).toUpperCase()}</div>
+    <div class="fl-callsign">${esc(f.callsign)}</div>
+    <div class="fl-route">${route}</div>
+    <div class="fl-cities">${cities}</div>
+    ${f.progress_pct != null ? `
+      <div class="fl-progress"><div class="fl-bar" style="width:${Math.min(100, Math.max(0, f.progress_pct))}%"></div></div>
+      <div class="fl-progress-pct">${Math.round(f.progress_pct)}%</div>` : ""}
+    <div class="fl-eta">${[eta, togo].filter(Boolean).join(" · ")}</div>
+    <div class="sp-facts">${facts}</div>
+    ${chips}`);
+  updateFollowMap(f);
+}
+
+document.getElementById("follow-info").addEventListener("click", (e) => {
+  const cs = e.target.dataset?.cs;
+  if (cs) { selectedFollowCs = cs; render(); }
+});
+
+/* Great-circle points between two coordinates, for the route polyline */
+function gcPoints(lat1, lon1, lat2, lon2, n = 64) {
+  const rad = Math.PI / 180;
+  const p1 = lat1 * rad, l1 = lon1 * rad, p2 = lat2 * rad, l2 = lon2 * rad;
+  const d = 2 * Math.asin(Math.sqrt(
+    Math.sin((p2 - p1) / 2) ** 2
+    + Math.cos(p1) * Math.cos(p2) * Math.sin((l2 - l1) / 2) ** 2));
+  if (d === 0) return [[lat1, lon1]];
+  const pts = [];
+  let prevLon = null;
+  for (let i = 0; i <= n; i++) {
+    const f2 = i / n;
+    const A = Math.sin((1 - f2) * d) / Math.sin(d);
+    const B = Math.sin(f2 * d) / Math.sin(d);
+    const x = A * Math.cos(p1) * Math.cos(l1) + B * Math.cos(p2) * Math.cos(l2);
+    const y = A * Math.cos(p1) * Math.sin(l1) + B * Math.cos(p2) * Math.sin(l2);
+    const z = A * Math.sin(p1) + B * Math.sin(p2);
+    let lon = Math.atan2(y, x) / rad;
+    // Unwrap across the antimeridian so Leaflet doesn't draw a world-wide line
+    if (prevLon != null) {
+      while (lon - prevLon > 180) lon -= 360;
+      while (lon - prevLon < -180) lon += 360;
+    }
+    prevLon = lon;
+    pts.push([Math.atan2(z, Math.hypot(x, y)) / rad, lon]);
+  }
+  return pts;
+}
+
+function updateFollowMap(f) {
+  if (typeof L === "undefined") return;
+  const el = document.getElementById("follow-map");
+  if (!followMap) {
+    followMap = L.map(el, { zoomControl: false, attributionControl: false, worldCopyJump: true });
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+                { maxZoom: 10 }).addTo(followMap);
+  }
+  followMap.invalidateSize(false);
+  const a = f.aircraft;
+  const r = f.route || {};
+  const key = `${f.callsign}|${r.origin ?? ""}`;
+  if (followMap.__key !== key) {
+    followMap.__key = key;
+    if (flLine) { followMap.removeLayer(flLine); flLine = null; }
+    for (const m of flEnds) followMap.removeLayer(m);
+    flEnds = [];
+    if (flPlane) { followMap.removeLayer(flPlane); flPlane = null; }
+    if (r.origin_lat != null && r.destination_lat != null) {
+      flLine = L.polyline(gcPoints(r.origin_lat, r.origin_lon,
+                                   r.destination_lat, r.destination_lon),
+                          { color: "#8f6a10", weight: 2, dashArray: "6 6" }).addTo(followMap);
+      flEnds = [
+        L.circleMarker([r.origin_lat, r.origin_lon],
+                       { radius: 5, color: "#ffb400", fillOpacity: 1 }).addTo(followMap),
+        L.circleMarker([r.destination_lat, r.destination_lon],
+                       { radius: 5, color: "#3ddc84", fillOpacity: 1 }).addTo(followMap),
+      ];
+      followMap.fitBounds(flLine.getBounds().pad(0.12));
+    }
+  }
+  if (a && a.lat != null) {
+    if (!flPlane) flPlane = L.marker([a.lat, a.lon],
+                                     { icon: planeDivIcon(a.track, "#3ddc84") }).addTo(followMap);
+    flPlane.setLatLng([a.lat, a.lon]);
+    flPlane.setIcon(planeDivIcon(a.track, "#3ddc84"));
+    if (!flLine) followMap.setView([a.lat, a.lon], 5);
+  }
+}
+
+let prevFollowStatuses = null;
+function announceFollows(data) {
+  const cur = {};
+  for (const f of data.follows || []) cur[f.callsign] = f.status;
+  if (prevFollowStatuses) {
+    for (const [cs, st] of Object.entries(cur)) {
+      const was = prevFollowStatuses[cs];
+      if (was && was !== st && st === "landed") {
+        const f = data.follows.find((x) => x.callsign === cs);
+        const where = f?.route?.destination_name ? ` in ${f.route.destination_name}` : "";
+        showToast(`${cs} has landed${where}`, "");
+        speak(`${cs} has landed${where}.`);
+      }
+    }
+  }
+  prevFollowStatuses = cur;
+}
+
+/* Follow panel: add/remove followed callsigns */
+const followEls = {
+  btn: document.getElementById("follow-btn"),
+  panel: document.getElementById("follow-panel"),
+  list: document.getElementById("follow-list"),
+  cs: document.getElementById("follow-cs"),
+  add: document.getElementById("follow-add"),
+  note: document.getElementById("follow-note"),
+};
+
+followEls.btn.onclick = () => {
+  followEls.panel.classList.toggle("hidden");
+  followEls.note.textContent = "";
+  renderFollowList();
+};
+
+function renderFollowList() {
+  setHTML(followEls.list, followsData.follows.map((f) =>
+    `<div class="watch-rule"><span>${esc(f.callsign)} — ${esc((FOLLOW_STATUS[f.status] ?? f.status).toLowerCase())}</span>` +
+    `<button data-cs="${esc(f.callsign)}" title="Stop following">✕</button></div>`).join("")
+    || '<p class="watch-empty">Not following any flights. Enter a callsign as broadcast (QFA12, not QF12).</p>');
+}
+
+followEls.list.addEventListener("click", async (e) => {
+  const cs = e.target.dataset?.cs;
+  if (!cs) return;
+  await fetch(`/api/follow/${encodeURIComponent(cs)}` + locQuery(), { method: "DELETE" });
+  followsData.follows = followsData.follows.filter((f) => f.callsign !== cs);
+  renderFollowList();
+  render();
+});
+
+followEls.add.onclick = async () => {
+  try {
+    const r = await fetch("/api/follow" + locQuery(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callsign: followEls.cs.value.trim().toUpperCase() }),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.detail || `HTTP ${r.status}`);
+    }
+    const j = await r.json();
+    followsData = j.follows;
+    followEls.cs.value = "";
+    followEls.note.textContent = "";
+    renderFollowList();
+    render();
+  } catch (e) {
+    followEls.note.textContent = e.message;
+  }
+};
 
 /* ---------- Toasts, voice announcements and the watch list ----------------
    Watch rules live on the SERVER (evaluated in its poll loop, pushed to
