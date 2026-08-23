@@ -1412,14 +1412,16 @@ function fmtDay(ts) {
   return ts ? new Date(ts * 1000).toLocaleDateString() : "–";
 }
 
-function hourlySVG(hourly) {
+function hourlyChart(hourly) {
   const max = Math.max(...hourly, 1);
-  const bars = hourly.map((c, h) => {
-    const bh = (c / max) * 22;
-    return `<rect class="bar${c === max && c > 0 ? " max" : ""}" x="${(h * 4.15 + 0.3).toFixed(2)}" y="${(25 - bh).toFixed(2)}" width="3.4" height="${bh.toFixed(2)}"></rect>` +
-      (h % 3 === 0 ? `<text x="${(h * 4.15 + 2).toFixed(2)}" y="29" text-anchor="middle">${String(h).padStart(2, "0")}</text>` : "");
+  return hourly.map((c, h) => {
+    const pct = c ? Math.max(4, (c / max) * 100) : 1.5;
+    const cls = c === 0 ? " zero" : c === max ? " max" : "";
+    return `<div class="hr-col" title="${String(h).padStart(2, "0")}:00 – ${c}">
+      <div class="hr-area"><div class="hr-bar${cls}" style="height:${pct.toFixed(1)}%"></div></div>
+      <div class="hr-lbl">${h % 3 === 0 ? String(h).padStart(2, "0") : ""}</div>
+    </div>`;
   }).join("");
-  return `<svg viewBox="0 0 100 30">${bars}</svg>`;
 }
 
 function renderStats(s, tracks) {
@@ -1456,7 +1458,7 @@ function renderStats(s, tracks) {
   statsEls.body.innerHTML = `
     <div class="stats-tiles">${tiles}</div>
     <div class="stats-section-hdr">FLYOVERS BY HOUR (TODAY)</div>
-    <div id="stats-hourly">${hourlySVG(t.hourly)}</div>
+    <div id="stats-hourly">${hourlyChart(t.hourly)}</div>
     <div class="stats-cols">${cols}</div>
     <div class="stats-section-hdr">SKY TRACKS – LAST 24 H (${nPts} SAMPLES${tracks.truncated ? ", TRUNCATED" : ""})</div>
     <div id="stats-map"></div>
@@ -1646,6 +1648,12 @@ function renderBoard(showDepartures) {
    whole script has executed hits declarations still in their temporal dead
    zone - which once shipped as a dashboard that rendered nothing. Nothing
    above this block may call render() or connect() at load time. */
+// Every footer panel closes from its own ✕ (as well as its toggle button)
+document.querySelectorAll(".ftr-panel .panel-close").forEach((b) => {
+  b.onclick = () => b.closest(".ftr-panel").classList.add("hidden");
+});
+
 connect();
 setInterval(render, 1000); // drive rotation, countdowns and linger without new data
 render(); // first paint immediately - the loading state must not wait a tick
+if (FORCED_VIEW === "stats") statsEls.btn.click(); // deep link: /?view=stats

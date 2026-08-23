@@ -13,7 +13,7 @@
        internet to render its own map chrome. static/vendor/README.md records
        the version and the upstream SRI hashes these files were checked against. -->
   <link rel="stylesheet" href="/static/vendor/leaflet.css?v=1.9.4">
-  <link rel="stylesheet" href="/static/style.css?v=24">
+  <link rel="stylesheet" href="/static/style.css?v=26">
 </head>
 <body>
   <header id="header">
@@ -106,7 +106,7 @@
 
   <!-- Follow a flight: per-callsign global trackers on the server -->
   <div id="follow-panel" class="ftr-panel hidden">
-    <h3>FOLLOW A FLIGHT</h3>
+    <h3>FOLLOW A FLIGHT<button class="panel-close" type="button" aria-label="Close">&#10005;</button></h3>
     <div id="follow-list"></div>
     <label for="follow-cs">Callsign (ICAO, e.g. QFA12)</label>
     <input id="follow-cs" maxlength="8" placeholder="QFA12">
@@ -119,7 +119,7 @@
   <!-- Watch list: server-side rules; matches toast here and push via
        ntfy/webhook if the server has NTFY_URL / WEBHOOK_URL configured. -->
   <div id="watch-panel" class="ftr-panel hidden">
-    <h3>WATCH LIST</h3>
+    <h3>WATCH LIST<button class="panel-close" type="button" aria-label="Close">&#10005;</button></h3>
     <div id="watch-rules"></div>
     <label for="watch-field">Watch for</label>
     <select id="watch-field">
@@ -145,7 +145,7 @@
   </div>
 
   <div id="loc-panel" class="ftr-panel hidden">
-    <h3>VIEW LOCATION</h3>
+    <h3>VIEW LOCATION<button class="panel-close" type="button" aria-label="Close">&#10005;</button></h3>
     <label for="loc-latlon">Location (lat, lon)</label>
     <input id="loc-latlon" placeholder="-33.8688, 151.2093">
     <button id="loc-gps" type="button">Use my location</button>
@@ -165,6 +165,6 @@
   </div>
 
   <script src="/static/vendor/leaflet.js?v=1.9.4"></script>
-  <script src="/static/app.js?v=33"></script>
+  <script src="/static/app.js?v=35"></script>
 </body>
 </html>

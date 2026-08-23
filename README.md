@@ -194,6 +194,7 @@ Each distinct location costs one upstream poll loop (see `MAX_LOCATIONS`).
 | `/?view=spotlight` | force the spotlight view (shows nearest aircraft) |
 | `/?view=nearby` | force the nearby-traffic list |
 | `/?view=board` | force the airport board |
+| `/?view=stats` | open the spotting-log stats page directly |
 | `/?lat=&lon=&radius=&area=&airport=` | view another location (see above) |
 | `/admin` | device-fleet admin page (needs `ADMIN_TOKEN` set) |
 | `/whatsthat` | phone page: compass arrow + elevation to the nearest aircraft |
