@@ -855,7 +855,34 @@ function otherCard(a) {
     </div>`;
 }
 
+/* Sky extras (/api/sky): the next naked-eye ISS pass, shown when the sky is
+   otherwise empty. Refetched every 30 minutes at most. */
+let skyData = null;
+let skyFetchedAt = 0;
+let skyInFlight = false;
+
+function ensureSky() {
+  if (skyInFlight || Date.now() - skyFetchedAt < 1_800_000) return;
+  skyInFlight = true;
+  fetch("/api/sky" + locQuery())
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => { skyData = j; skyFetchedAt = Date.now(); })
+    .catch(() => { skyFetchedAt = Date.now(); })
+    .finally(() => { skyInFlight = false; });
+}
+
+function issLine() {
+  const p = skyData?.iss?.next_visible;
+  if (!p || p.start * 1000 < Date.now() - 600_000) return "";
+  const when = new Date(p.start * 1000);
+  const today = new Date().toDateString() === when.toDateString();
+  const day = today ? "" : when.toLocaleDateString([], { weekday: "short" }).toUpperCase() + " ";
+  const t = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `<div class="iss-line">✦ ISS PASS ${esc(day)}${t} · ${esc(p.start_dir)}→${esc(p.end_dir)} · MAX ${esc(p.max_elevation_deg)}°</div>`;
+}
+
 function renderRadar() {
+  ensureSky();
   const list = overhead.aircraft.slice(0, MAX_CARDS);
   els.radarEmpty.classList.toggle("hidden", list.length > 0);
   if (!list.length) {
@@ -863,7 +890,7 @@ function renderRadar() {
     setHTML(els.radarEmpty, accessDenied
       ? '<div class="empty-msg">TOKEN REQUIRED (⌖)</div>'
       : overheadLoaded
-        ? '<div class="empty-msg">CLEAR SKIES</div>'
+        ? `<div class="empty-stack"><div class="empty-msg">CLEAR SKIES</div>${issLine()}</div>`
         : '<div class="empty-msg loading"><span class="spinner"></span>LOADING TRAFFIC…</div>');
   }
   setHTML(els.aircraftList, list.map((a) => {

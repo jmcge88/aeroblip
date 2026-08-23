@@ -245,6 +245,20 @@ main { flex: 1; min-height: 0; overflow: hidden; }
   color: var(--text-dim);
 }
 
+.empty-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3vh;
+}
+
+/* Next visible ISS pass, shown under CLEAR SKIES */
+.iss-line {
+  font-size: 2.2vh;
+  letter-spacing: 0.2em;
+  color: var(--text-dim);
+}
+
 /* ---------- spotlight view (single flight overhead) ---------- */
 .spotlight {
   height: 100%;

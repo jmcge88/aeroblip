@@ -23,8 +23,10 @@ from app.providers.wx import WxProvider
 from app.services.alerts import GlobalAlerts
 from app.services.devices import DeviceRegistry
 from app.services.hub import LocationHub, TooManyLocations, cell_key
+from app.services.iss import IssTracker
 from app.services.meta_cache import CachedMeta
 from app.services.sightings import Sightings
+from app.services.sun import light_info
 from app.services.watches import WatchManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -43,6 +45,7 @@ sightings: Sightings | None = None
 watches: WatchManager
 standing_meta: StandingDataMeta
 wx: WxProvider
+iss: IssTracker
 _wx_cache: dict[str, tuple[float, dict | None]] = {}
 WX_TTL = 600  # seconds; aviationweather.gov is free but not ours to hammer
 devices = DeviceRegistry(str(Path(config.DATA_DIR) / "devices.db"))
@@ -82,9 +85,10 @@ async def lifespan(app: FastAPI):
         # airframes don't vary by location, so the fleet must not re-buy them
         # per device, and they must survive reaping and restarts.
         meta = meta_cache = CachedMeta(meta, Path(config.DATA_DIR) / "meta_cache.json")
-        global sightings, watches, standing_meta, wx
+        global sightings, watches, standing_meta, wx, iss
         standing_meta = standing
         wx = WxProvider(client)
+        iss = IssTracker(client, Path(config.DATA_DIR) / "iss_tle.txt")
         watches = WatchManager(Path(config.DATA_DIR) / "watches.json", client)
         if config.SIGHTINGS_ENABLED:
             # Demo traffic goes to its own log - fake Qantas flights must
@@ -281,6 +285,14 @@ async def wx_endpoint(request: Request):
     if cached is None:
         raise HTTPException(status_code=404, detail="no weather for station")
     return cached
+
+
+@app.get("/api/sky", dependencies=[Depends(require_device)])
+async def sky_endpoint(request: Request):
+    """Sky extras for a location: sun/light state and upcoming ISS passes
+    (next 48 h, with the naked-eye-visible ones flagged)."""
+    lat, lon, _, _, _ = parse_location(request.query_params)
+    return {"sun": light_info(lat, lon), "iss": await iss.passes_for(lat, lon)}
 
 
 @app.get("/api/watches", dependencies=[Depends(require_device)])
