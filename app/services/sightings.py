@@ -22,7 +22,7 @@ import asyncio
 import logging
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -69,7 +69,8 @@ def _local_midnight() -> int:
 class Sightings:
     def __init__(self, db_path: str | Path, retention_hours: float = 72):
         self._retention_s = retention_hours * 3600
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._db_path = Path(db_path)
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -178,10 +179,20 @@ class Sightings:
              a.get("altitude_ft"), a.get("ground_speed_kt"), a.get("track"),
              a.get("distance_nm")))
 
+    def _reader(self) -> sqlite3.Connection:
+        """A fresh read-only connection: stats/tracks queries run in worker
+        threads (asyncio.to_thread) while the poll loop writes on the main
+        thread, and sharing one connection across threads is only safe on
+        serialized SQLite builds. WAL makes concurrent readers free."""
+        conn = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
+
     def stats(self, cell: str) -> dict:
         """Daily and all-time spotting statistics for one cell."""
         mid = _local_midnight()
-        q = self._conn.execute
+        conn = self._reader()
+        q = conn.execute
         hourly = [0] * 24
         for row in q("SELECT CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INT) h,"
                      " COUNT(*) c FROM flyovers WHERE cell=? AND ts>=? GROUP BY h",
@@ -238,15 +249,20 @@ class Sightings:
                 " WHERE cell=? AND type IS NOT NULL AND type != '' GROUP BY type"
                 " ORDER BY f DESC", cell),
         }
+        conn.close()
         return {"cell": cell, "today": today, "alltime": alltime}
 
     def tracks(self, cell: str, hours: float) -> dict:
         """Recent position samples for the heatmap/replay map, oldest first."""
         since = int(time.time() - hours * 3600)
-        rows = self._conn.execute(
-            "SELECT ts, hex, lat, lon, altitude_ft FROM track_points"
-            " WHERE cell=? AND ts>=? ORDER BY ts LIMIT ?",
-            (cell, since, MAX_TRACK_POINTS)).fetchall()
+        conn = self._reader()
+        try:
+            rows = conn.execute(
+                "SELECT ts, hex, lat, lon, altitude_ft FROM track_points"
+                " WHERE cell=? AND ts>=? ORDER BY ts LIMIT ?",
+                (cell, since, MAX_TRACK_POINTS)).fetchall()
+        finally:
+            conn.close()
         return {"since": since,
                 "truncated": len(rows) == MAX_TRACK_POINTS,
                 "points": [[r["ts"], r["hex"], r["lat"], r["lon"],
