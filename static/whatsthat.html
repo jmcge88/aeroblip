@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0a0e14">
+  <title>What's that plane?</title>
+  <style>
+    /* Same palette as the dashboard, self-contained for a phone page */
+    :root {
+      --bg: #0a0e14; --panel: #10161f; --amber: #ffb400; --amber-dim: #8f6a10;
+      --green: #3ddc84; --red: #ff5c5c; --text: #e8e6e3; --text-dim: #7a828e;
+      --mono: "IBM Plex Mono", "Roboto Mono", "Consolas", monospace;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--mono); }
+    body { display: flex; flex-direction: column; padding: 12px; gap: 10px; }
+    header { display: flex; justify-content: space-between; align-items: baseline; }
+    h1 { font-size: 1.05rem; letter-spacing: .25em; color: var(--amber); font-weight: 700; }
+    #status { font-size: .68rem; color: var(--text-dim); text-align: right; }
+    #pointer {
+      flex: 0 0 auto; display: flex; flex-direction: column; align-items: center;
+      gap: 6px; padding: 10px 0 4px;
+    }
+    #arrow-wrap { width: 42vw; height: 42vw; max-width: 220px; max-height: 220px; position: relative; }
+    #arrow-wrap svg { width: 100%; height: 100%; display: block; }
+    #look { font-size: 1rem; color: var(--green); letter-spacing: .15em; text-align: center; }
+    #look .up { color: var(--amber); }
+    #compass-note { font-size: .66rem; color: var(--text-dim); text-align: center; max-width: 320px; }
+    #compass-btn {
+      background: none; border: 1px solid var(--amber-dim); color: var(--amber);
+      font-family: var(--mono); font-size: .75rem; letter-spacing: .1em;
+      padding: 6px 14px; border-radius: 6px;
+    }
+    #sel {
+      background: var(--panel); border-left: 5px solid var(--amber); border-radius: 8px;
+      padding: 10px 12px;
+    }
+    #sel .cs { font-size: 1.5rem; font-weight: 700; color: var(--amber); letter-spacing: .06em; }
+    #sel .route { font-size: 1rem; }
+    #sel .sub { font-size: .74rem; color: var(--text-dim); margin-top: 4px; line-height: 1.5; }
+    #list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+    .row {
+      background: var(--panel); border-left: 4px solid #1c2530; border-radius: 6px;
+      padding: 8px 10px; display: flex; justify-content: space-between; gap: 8px;
+      font-size: .8rem; align-items: center;
+    }
+    .row.on { border-left-color: var(--amber); }
+    .row .id { color: var(--text); font-weight: 700; }
+    .row .meta { color: var(--text-dim); font-size: .7rem; text-align: right; }
+    #empty { color: var(--text-dim); text-align: center; padding: 30px 0; letter-spacing: .3em; }
+    footer { font-size: .6rem; color: var(--text-dim); opacity: .7; text-align: center; }
+    footer a { color: inherit; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WHAT'S THAT PLANE?</h1>
+    <div id="status">locating…</div>
+  </header>
+
+  <div id="pointer">
+    <div id="arrow-wrap">
+      <svg viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="47" fill="none" stroke="#1c2530" stroke-width="1.5"/>
+        <text id="north-label" x="50" y="10" fill="#7a828e" font-size="7" text-anchor="middle" font-family="monospace">N</text>
+        <g id="arrow" transform="rotate(0 50 50)">
+          <path d="M50,12 L64,72 L50,60 L36,72 Z" fill="#3ddc84" stroke="#0a0e14" stroke-width="2"/>
+        </g>
+      </svg>
+    </div>
+    <div id="look">—</div>
+    <button id="compass-btn" class="hidden" style="display:none">ENABLE COMPASS</button>
+    <div id="compass-note"></div>
+  </div>
+
+  <div id="sel" style="display:none"></div>
+  <div id="list"></div>
+  <div id="empty" style="display:none">CLEAR SKIES</div>
+
+  <footer>flight data &copy; <a href="https://adsb.lol">adsb.lol</a> contributors (ODbL)</footer>
+
+<script>
+"use strict";
+/* Point your phone at the sky and find out. Uses the same /api/overhead the
+   dashboard uses; adds the phone's GPS + compass to turn bearings into a
+   physical "look that way, that high" arrow.
+
+   Compass reality check: absolute heading needs a secure context and, on
+   iOS, an explicit permission tap. Without it the arrow falls back to
+   north-up (map convention) and the text still says which way to look. */
+const qs = new URLSearchParams(location.search);
+let stored = {};
+try { stored = JSON.parse(localStorage.getItem("viewLocation")) || {}; } catch { stored = {}; }
+const token = qs.get("token") || stored.token || null;
+
+let myLat = parseFloat(qs.get("lat") ?? stored.lat);
+let myLon = parseFloat(qs.get("lon") ?? stored.lon);
+let haveFix = Number.isFinite(myLat) && Number.isFinite(myLon);
+
+let heading = null;        // device compass heading (deg, 0 = north)
+let overhead = { aircraft: [] };
+let selectedHex = null;
+
+const el = (id) => document.getElementById(id);
+
+function esc(v) {
+  if (v == null) return "";
+  return String(v).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+function locQuery() {
+  const p = new URLSearchParams();
+  if (haveFix) { p.set("lat", myLat.toFixed(6)); p.set("lon", myLon.toFixed(6)); }
+  for (const k of ["radius", "area", "airport"]) {
+    const v = qs.get(k) || stored[k];
+    if (v) p.set(k, v);
+  }
+  if (token) p.set("token", token);
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+/* GPS: refine the fix continuously; a URL/saved location is the fallback */
+if ("geolocation" in navigator && window.isSecureContext) {
+  navigator.geolocation.watchPosition(
+    (p) => {
+      myLat = p.coords.latitude; myLon = p.coords.longitude;
+      if (!haveFix) { haveFix = true; poll(); }
+      el("status").textContent = `GPS ±${Math.round(p.coords.accuracy)} m`;
+    },
+    () => {
+      el("status").textContent = haveFix ? "saved location" : "no location - open the ⌖ panel on the dashboard or add ?lat=&lon=";
+    },
+    { enableHighAccuracy: true, maximumAge: 10000 });
+} else {
+  el("status").textContent = haveFix
+    ? "saved location (GPS needs HTTPS)"
+    : "no location - GPS needs HTTPS; add ?lat=&lon= to the URL";
+}
+
+/* Compass: iOS wants a user-gesture permission; Android fires
+   deviceorientationabsolute without asking */
+function onOrientation(e) {
+  if (typeof e.webkitCompassHeading === "number") heading = e.webkitCompassHeading;
+  else if (e.absolute && e.alpha != null) heading = (360 - e.alpha) % 360;
+  else return;
+  el("compass-note").textContent = "";
+}
+if (typeof DeviceOrientationEvent !== "undefined"
+    && typeof DeviceOrientationEvent.requestPermission === "function") {
+  const btn = el("compass-btn");
+  btn.style.display = "";
+  btn.onclick = async () => {
+    try {
+      if (await DeviceOrientationEvent.requestPermission() === "granted") {
+        window.addEventListener("deviceorientation", onOrientation);
+        btn.style.display = "none";
+      }
+    } catch { el("compass-note").textContent = "compass unavailable"; }
+  };
+} else {
+  window.addEventListener("deviceorientationabsolute", onOrientation);
+  window.addEventListener("deviceorientation", onOrientation);
+  el("compass-note").textContent = "";
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/overhead" + locQuery());
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    overhead = await r.json();
+  } catch (e) {
+    el("status").textContent = `offline (${e.message})`;
+  }
+  draw();
+}
+setInterval(poll, 5000);
+poll();
+setInterval(draw, 500); // keep the arrow live between polls as the phone turns
+
+function pick() {
+  const list = overhead.aircraft || [];
+  return list.find((a) => a.hex === selectedHex) ?? list[0] ?? null;
+}
+
+function elevationDeg(a) {
+  if (a.altitude_ft == null || a.distance_nm == null || a.distance_nm <= 0) return null;
+  return Math.atan2(a.altitude_ft / 6076.12, a.distance_nm) * 180 / Math.PI;
+}
+
+function draw() {
+  const list = overhead.aircraft || [];
+  const a = pick();
+  el("empty").style.display = list.length ? "none" : "";
+  el("sel").style.display = a ? "" : "none";
+
+  if (a) {
+    const brg = a.bearing_from_home;
+    const rot = brg == null ? 0 : (heading == null ? brg : brg - heading);
+    el("arrow").setAttribute("transform", `rotate(${Math.round(rot)} 50 50)`);
+    el("north-label").textContent = heading == null ? "N" : "";
+    const up = elevationDeg(a);
+    const dir = a.heading_cardinal ? "" : "";
+    const cards = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+    const lookDir = brg != null ? cards[Math.round(brg / 22.5) % 16] : "?";
+    el("look").innerHTML =
+      `LOOK ${esc(lookDir)}${up != null ? ` · <span class="up">UP ${Math.round(up)}°</span>` : ""}`;
+    const cs = esc(a.callsign || a.registration || a.hex);
+    const route = a.route
+      ? `${esc(a.route.origin ?? "?")} → ${esc(a.route.destination ?? "?")}`
+      : esc(a.description || a.type || "");
+    const airline = esc(a.airline?.airline ?? "");
+    const alt = a.altitude_ft != null ? `${Math.round(a.altitude_ft).toLocaleString()} ft` : "";
+    const dist = a.distance_nm != null ? `${a.distance_nm.toFixed(1)} NM` : "";
+    const model = esc(a.info ? [a.info.manufacturer, a.info.model].filter(Boolean).join(" ")
+                             : (a.description || ""));
+    el("sel").innerHTML = `
+      <div class="cs">${cs}</div>
+      <div class="route">${route}</div>
+      <div class="sub">${[airline, model, alt, dist, a.circling ? "CIRCLING" : ""]
+        .filter(Boolean).join(" · ")}</div>`;
+  }
+
+  el("list").innerHTML = list.slice(0, 8).map((x) => {
+    const cs = esc(x.callsign || x.registration || x.hex);
+    const route = x.route ? `${esc(x.route.origin ?? "?")}→${esc(x.route.destination ?? "?")}` : esc(x.type || "");
+    const dist = x.distance_nm != null ? `${x.distance_nm.toFixed(1)} NM` : "";
+    const alt = x.altitude_ft != null ? `${Math.round(x.altitude_ft / 100) / 10}k ft` : "";
+    return `<div class="row${a && x.hex === a.hex ? " on" : ""}" data-hex="${esc(x.hex)}">
+      <span class="id">${cs}</span><span>${route}</span>
+      <span class="meta">${[dist, alt].filter(Boolean).join("<br>")}</span></div>`;
+  }).join("");
+}
+
+el("list").addEventListener("click", (e) => {
+  const hex = e.target.closest("[data-hex]")?.dataset.hex;
+  if (hex) { selectedHex = hex; draw(); }
+});
+</script>
+</body>
+</html>

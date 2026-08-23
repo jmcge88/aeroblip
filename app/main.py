@@ -590,6 +590,15 @@ async def admin_page():
                         headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/whatsthat")
+async def whatsthat():
+    """Phone page: 'what's that plane?' - compass arrow + elevation angle to
+    the nearest aircraft. GPS/compass need a secure context; over plain LAN
+    HTTP it falls back to the saved dashboard location and a north-up arrow."""
+    return FileResponse(STATIC_DIR / "whatsthat.html",
+                        headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/locate")
 async def locate():
     """Phone helper: shows GPS coordinates to paste into the device's WiFi
