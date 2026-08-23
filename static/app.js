@@ -1386,10 +1386,12 @@ const statsEls = {
   cell: document.getElementById("stats-cell"),
 };
 let statsMap = null;
-let statsMarkers = {};   // hex -> replay marker
-let statsIndex = null;   // hex -> {pts: [[ts, lat, lon], ...], ptr}
-let statsPlaying = null; // interval id while replaying
+let statsMarkers = {};       // hex -> replay marker
+let statsIndex = null;       // hex -> {pts: [[ts, lat, lon], ...], ptr}
+let statsPlaying = null;     // interval id while replaying
 let statsLastT = 0;
+let statsTrackMarkers = [];  // { marker, label } for every rendered dot, for the labels toggle
+let statsLabelsOn = false;   // show every dot's label at once, not just on click
 
 statsEls.btn.onclick = () => {
   closePanels();
@@ -1400,6 +1402,7 @@ statsEls.close.onclick = () => {
   statsEls.overlay.classList.add("hidden");
   stopReplay();
   if (statsMap) { statsMap.remove(); statsMap = null; statsMarkers = {}; }
+  statsTrackMarkers = [];
 };
 
 async function loadStats() {
@@ -1480,14 +1483,40 @@ function renderStats(s, tracks) {
     <div id="stats-hourly">${hourlyChart(t.hourly)}</div>
     <div class="stats-cols">${cols}</div>
     <div class="stats-section-hdr">SKY TRACKS – LAST 24 H (${nPts} SAMPLES${tracks.truncated ? ", TRUNCATED" : ""})</div>
+    <label class="stats-toggle">
+      <input type="checkbox" id="tracks-labels-toggle"> Always show callsign / altitude / route
+    </label>
     <div id="stats-map"></div>
     <div class="stats-map-bar">
       <button id="replay-btn" type="button">▶ REPLAY</button>
       <input id="replay-slider" type="range">
       <span id="replay-time">NOW</span>
     </div>
-    <div class="stats-note">Dots: amber below 10,000 ft, green above. Drag the slider or press replay to sweep the day.</div>`;
+    <div class="stats-note">Dots: amber below 10,000 ft, green above. Click a dot for its callsign, altitude and
+      route, or tick the box above to keep every label on screen. Drag the slider or press replay to sweep the day.</div>`;
   initStatsMap(tracks);
+}
+
+// One line of "CALLSIGN · ALT FT · ORIGIN → DEST" for a track point's popup/
+// tooltip. Older points logged before routes were tracked per-sample (or a
+// flight with no route resolved yet) fall back to "–".
+function trackPointLabel(hex, alt, callsign, origin, destination) {
+  const cs = esc(callsign || hex || "?");
+  const altStr = alt != null ? `${Math.round(alt).toLocaleString()} ft` : "alt –";
+  const route = origin && destination ? `${esc(origin)} → ${esc(destination)}` : "route –";
+  return `${cs} · ${altStr} · ${route}`;
+}
+
+// Show/hide a permanent label on every dot at once - "click a dot" (the
+// popup below) works regardless of this toggle.
+function applyTrackLabelsToggle() {
+  for (const { marker, label } of statsTrackMarkers) {
+    marker.unbindTooltip();
+    if (statsLabelsOn) {
+      marker.bindTooltip(label, { permanent: true, direction: "top", offset: [0, -1],
+                                   opacity: 0.9, className: "track-tooltip" }).openTooltip();
+    }
+  }
 }
 
 function initStatsMap(tracks) {
@@ -1497,6 +1526,12 @@ function initStatsMap(tracks) {
   statsMap = L.map(el, { attributionControl: false });
   L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
               { maxZoom: 12 }).addTo(statsMap);
+  statsTrackMarkers = [];
+  const toggle = document.getElementById("tracks-labels-toggle");
+  if (toggle) {
+    toggle.checked = statsLabelsOn;
+    toggle.onchange = () => { statsLabelsOn = toggle.checked; applyTrackLabelsToggle(); };
+  }
   const pts = tracks.points || [];
   if (!pts.length) { statsMap.setView([-27.4, 153.1], 8); return; }
   // Heatmap layer: cap the dot count so old tablets keep up
@@ -1504,14 +1539,18 @@ function initStatsMap(tracks) {
   const canvas = L.canvas({ padding: 0.3 });
   const bounds = [];
   for (let i = 0; i < pts.length; i += step) {
-    const [, , lat, lon, alt] = pts[i];
+    const [, hex, lat, lon, alt, callsign, origin, destination] = pts[i];
     bounds.push([lat, lon]);
-    L.circleMarker([lat, lon], {
+    const marker = L.circleMarker([lat, lon], {
       renderer: canvas, radius: 1.4, stroke: false,
       fillColor: alt != null && alt < 10000 ? "#ffb400" : "#3ddc84",
       fillOpacity: 0.3,
     }).addTo(statsMap);
+    const label = trackPointLabel(hex, alt, callsign, origin, destination);
+    marker.bindPopup(label, { className: "track-popup", closeButton: false });
+    statsTrackMarkers.push({ marker, label });
   }
+  applyTrackLabelsToggle();
   statsMap.fitBounds(L.latLngBounds(bounds).pad(0.05));
   // Replay index: per-aircraft sample lists in time order
   statsIndex = {};
