@@ -9,6 +9,7 @@
 #include <SensorQMI8658.hpp>
 #include <WiFiManager.h>
 #include <ArduinoWebsockets.h>
+#include <ArduinoJson.h>
 #include <Preferences.h>
 #define XPOWERS_CHIP_AXP2101
 #include <XPowersLib.h>
@@ -280,6 +281,106 @@ static const TzOption TZ_OPTIONS[] = {
 };
 #define TZ_COUNT ((int)(sizeof(TZ_OPTIONS) / sizeof(TZ_OPTIONS[0])))
 
+// Manage follows/watch rules from the device's own settings page. Every list
+// and every add/remove is a single fetch() the browser fires when the owner
+// clicks something - never a background poll (see the 0.10.1 crash-loop note
+// on stacked TLS handshakes from unconditional device-side polling).
+static const char FOLLOW_WATCH_HTML[] = R"HTML(
+<br/><label>Followed flights</label><br/>
+<div id="flw">Loading...</div>
+<input type="text" id="flwadd" placeholder="Callsign e.g. QF9" style="width:60%" maxlength="10">
+<button type="button" id="flwaddbtn">Add</button>
+<div id="flwerr" style="color:#b00020"></div>
+<script>
+function ffesc(s){return String(s).replace(/[&<>"']/g,function(c){
+  return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
+function loadFollows(){
+  fetch("/follows").then(function(r){return r.json();}).then(function(list){
+    var d=document.getElementById("flw");
+    if(!list.length){d.textContent="(none)";return;}
+    var h="";
+    for(var i=0;i<list.length;i++)
+      h+='<div>'+ffesc(list[i].callsign)+' <button type="button" class="rmflw" data-cs="'+
+         ffesc(list[i].callsign)+'">Remove</button></div>';
+    d.innerHTML=h;
+  }).catch(function(){document.getElementById("flw").textContent="(unavailable)";});
+}
+document.getElementById("flw").addEventListener("click",function(e){
+  if(e.target.className!=="rmflw")return;
+  fetch("/followremove",{method:"POST",
+    headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"callsign="+encodeURIComponent(e.target.getAttribute("data-cs"))}).then(loadFollows);
+});
+document.getElementById("flwaddbtn").addEventListener("click",function(){
+  var v=document.getElementById("flwadd").value.trim();
+  if(!v)return;
+  var err=document.getElementById("flwerr"); err.textContent="";
+  fetch("/followadd",{method:"POST",
+    headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"callsign="+encodeURIComponent(v)})
+    .then(function(r){return r.text().then(function(t){return {ok:r.ok,t:t};});})
+    .then(function(res){
+      if(res.ok){document.getElementById("flwadd").value="";loadFollows();}
+      else err.textContent=res.t;
+    });
+});
+loadFollows();
+</script>
+<br/><label>Watch rules</label><br/>
+<div id="wl">Loading...</div>
+<select id="wfield">
+<option value="callsign">Callsign starts with</option>
+<option value="registration">Registration</option>
+<option value="hex">Hex</option>
+<option value="type">Aircraft type</option>
+<option value="airline">Airline</option>
+<option value="circling">Circling nearby</option>
+<option value="squawk">Emergency squawk</option>
+<option value="new_type">First-ever type</option>
+</select>
+<input type="text" id="wvalue" placeholder="Value (blank for circling/squawk/first-ever)"
+ style="width:50%" maxlength="32">
+<button type="button" id="waddbtn">Add</button>
+<div id="wlerr" style="color:#b00020"></div>
+<script>
+function loadWatches(){
+  fetch("/watches").then(function(r){return r.json();}).then(function(list){
+    var d=document.getElementById("wl");
+    if(!list.length){d.textContent="(none)";return;}
+    var h="";
+    for(var i=0;i<list.length;i++){
+      var r=list[i];
+      var label=(r.field==="circling"||r.field==="squawk"||r.field==="new_type")
+        ? r.field : (r.field+"="+r.value);
+      h+='<div>'+ffesc(label)+' <button type="button" class="rmw" data-id="'+
+         ffesc(r.id)+'">Remove</button></div>';
+    }
+    d.innerHTML=h;
+  }).catch(function(){document.getElementById("wl").textContent="(unavailable)";});
+}
+document.getElementById("wl").addEventListener("click",function(e){
+  if(e.target.className!=="rmw")return;
+  fetch("/watchremove",{method:"POST",
+    headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"id="+encodeURIComponent(e.target.getAttribute("data-id"))}).then(loadWatches);
+});
+document.getElementById("waddbtn").addEventListener("click",function(){
+  var f=document.getElementById("wfield").value;
+  var v=document.getElementById("wvalue").value.trim();
+  var err=document.getElementById("wlerr"); err.textContent="";
+  fetch("/watchadd",{method:"POST",
+    headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"field="+encodeURIComponent(f)+"&value="+encodeURIComponent(v)})
+    .then(function(r){return r.text().then(function(t){return {ok:r.ok,t:t};});})
+    .then(function(res){
+      if(res.ok){document.getElementById("wvalue").value="";loadWatches();}
+      else err.textContent=res.t;
+    });
+});
+loadWatches();
+</script>
+)HTML";
+
 static const char LOC_HINT_HTML[] =
     "<br/><small>Location: paste coordinates like <b>-27.4698, 153.0251</b> "
     "(long-press your home in Google Maps, or visit "
@@ -448,6 +549,66 @@ static void connectWiFi() {
       audioSetVolumes(g_volChime, g_volAlarm);
       wm.server->send(200, "text/plain", "ok");
     });
+    // Follow/watch management for the settings page. Each handler here fires
+    // exactly one request to the flight-info server, only when the owner
+    // clicked something in the browser - see FOLLOW_WATCH_HTML's comment.
+    wm.server->on("/follows", []() {
+      JsonDocument doc;
+      JsonArray arr = doc.to<JsonArray>();
+      xSemaphoreTake(dataLock, portMAX_DELAY);
+      for (int i = 0; i < g_follow.count; i++)
+        arr.add<JsonObject>()["callsign"] = g_follow.flights[i].ac.callsign;
+      xSemaphoreGive(dataLock);
+      String out;
+      serializeJson(doc, out);
+      wm.server->send(200, "application/json", out);
+    });
+    wm.server->on("/followadd", []() {
+      String cs = wm.server->arg("callsign");
+      cs.trim();
+      if (!cs.length()) { wm.server->send(400, "text/plain", "callsign required"); return; }
+      String err;
+      if (followAdd(cs.c_str(), err)) {
+        wm.server->send(200, "text/plain", "ok");
+        g_wsRestart = true; // pick up the new follow without waiting for the next poll
+      } else {
+        wm.server->send(400, "text/plain", err.length() ? err : "add failed");
+      }
+    });
+    wm.server->on("/followremove", []() {
+      String cs = wm.server->arg("callsign");
+      if (!cs.length()) { wm.server->send(400, "text/plain", "callsign required"); return; }
+      bool ok = followRemove(cs.c_str());
+      wm.server->send(ok ? 200 : 404, "text/plain", ok ? "ok" : "not found");
+    });
+    wm.server->on("/watches", []() {
+      static WatchRuleView rules[12];
+      int n = fetchWatchRules(rules, 12);
+      if (n < 0) { wm.server->send(502, "text/plain", "fetch failed"); return; }
+      JsonDocument doc;
+      JsonArray arr = doc.to<JsonArray>();
+      for (int i = 0; i < n; i++) {
+        JsonObject o = arr.add<JsonObject>();
+        o["id"] = rules[i].id;
+        o["field"] = rules[i].field;
+        o["value"] = rules[i].value;
+      }
+      String out;
+      serializeJson(doc, out);
+      wm.server->send(200, "application/json", out);
+    });
+    wm.server->on("/watchadd", []() {
+      String f = wm.server->arg("field");
+      String v = wm.server->arg("value");
+      String err;
+      if (watchAdd(f.c_str(), v.c_str(), err)) wm.server->send(200, "text/plain", "ok");
+      else wm.server->send(400, "text/plain", err.length() ? err : "add failed");
+    });
+    wm.server->on("/watchremove", []() {
+      String id = wm.server->arg("id");
+      if (!id.length()) { wm.server->send(400, "text/plain", "id required"); return; }
+      wm.server->send(watchRemove(id.c_str()) ? 200 : 404, "text/plain", "");
+    });
     wm.server->on("/reboot", []() {
       wm.server->send(200, "text/plain", "rebooting");
       Serial.println("[cfg] reboot requested from settings page");
@@ -503,6 +664,7 @@ static void connectWiFi() {
                                           s_airportVal, 4);
   screensParam = new WiFiManagerParameter(screensHtml);
   static WiFiManagerParameter locHint(LOC_HINT_HTML);
+  static WiFiManagerParameter followWatchParam(FOLLOW_WATCH_HTML);
   wm.addParameter(serverParam);
   wm.addParameter(&locHint);
   wm.addParameter(locParam);
@@ -510,6 +672,7 @@ static void connectWiFi() {
   wm.addParameter(areaParam);
   wm.addParameter(airportParam);
   wm.addParameter(screensParam);
+  wm.addParameter(&followWatchParam);
   wm.setSaveParamsCallback(onSaveParams);
 
   // Catch a slightly-late press too: sample the USER key while the

@@ -100,7 +100,7 @@ struct AlertsData {
 
 // Follow-a-flight (server-side trackers; the device only displays them).
 // Arrives on the ws "follow" frame, or from /api/follow when polling.
-#define MAX_FOLLOWS_SHOWN 3
+#define MAX_FOLLOWS_SHOWN 5
 struct FollowFlight {
   Aircraft ac;          // position/route/identity, same parser as overhead
   char status[14];      // waiting | live | no_coverage | landed
@@ -164,6 +164,23 @@ bool fetchAlerts(AlertsData &out);
 bool fetchFollow(FollowData &out);
 bool fetchWx(WxData &out);
 bool fetchSky(SkyData &out);
+
+// On-device follow/watch management, for the settings page (see main.cpp's
+// /follows, /watches, /followadd, /followremove, /watchadd, /watchremove
+// handlers). Each call is a single request made only when the owner acts in
+// the browser - never a background poll, per the 0.10.1 crash-loop fix.
+bool followAdd(const char *callsign, String &errOut);
+bool followRemove(const char *callsign);
+
+struct WatchRuleView {
+  char id[14];
+  char field[10];
+  char value[34];
+};
+// Returns the number of rules written (up to maxOut), or -1 on fetch failure.
+int fetchWatchRules(WatchRuleView *out, int maxOut);
+bool watchAdd(const char *field, const char *value, String &errOut);
+bool watchRemove(const char *id);
 
 // Owner-opt-in photo lookup, straight from the device to adsbdb (which serves
 // planespotters.net thumbnails). Product servers never handle photo data -

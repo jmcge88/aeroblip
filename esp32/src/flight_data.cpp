@@ -145,6 +145,97 @@ static bool httpGetJson(const char *path, JsonDocument &doc, const JsonDocument 
   return ok;
 }
 
+// Shared client for the on-device follow/watch management calls below - each
+// is a single request fired only when the owner acts in the settings page,
+// never a background poll (see the 0.10.1 note on stacked TLS handshakes).
+static bool httpSend(const char *method, const String &path, const String &body,
+                     String *respOut) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  HTTPClient http;
+  WiFiClient plain;
+  WiFiClientSecure secure;
+  WiFiClient *client = &plain;
+  if (s_serverBase.startsWith("https://")) {
+#ifdef PRODUCT_BUILD
+    secure.setCACert(PINNED_ROOTS);
+#else
+    secure.setInsecure();
+#endif
+    client = &secure;
+  }
+  String url = s_serverBase + path;
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.setConnectTimeout(HTTP_TIMEOUT_MS);
+  if (!http.begin(*client, url)) return false;
+  if (deviceToken()[0]) http.addHeader("X-Device-Token", deviceToken());
+  http.addHeader("X-FW-Version", FW_VERSION);
+  if (body.length()) http.addHeader("Content-Type", "application/json");
+  int code = http.sendRequest(method, (uint8_t *)body.c_str(), body.length());
+  bool ok = code >= 200 && code < 300;
+  if (respOut) *respOut = http.getString();
+  if (!ok) Serial.printf("[net] %s %s -> %d\n", method, path.c_str(), code);
+  http.end();
+  return ok;
+}
+
+// Server error responses are {"detail": "..."} (FastAPI's HTTPException shape)
+static void extractError(const String &resp, String &errOut) {
+  if (!resp.length()) return;
+  JsonDocument doc;
+  if (!deserializeJson(doc, resp)) errOut = (const char *)(doc["detail"] | "failed");
+}
+
+bool followAdd(const char *callsign, String &errOut) {
+  JsonDocument doc;
+  doc["callsign"] = callsign;
+  String body;
+  serializeJson(doc, body);
+  String resp;
+  bool ok = httpSend("POST", "/api/follow", body, &resp);
+  if (!ok) extractError(resp, errOut);
+  return ok;
+}
+
+bool followRemove(const char *callsign) {
+  return httpSend("DELETE", String("/api/follow/") + callsign, "", nullptr);
+}
+
+int fetchWatchRules(WatchRuleView *out, int maxOut) {
+  String resp;
+  if (!httpSend("GET", "/api/watches", "", &resp)) return -1;
+  JsonDocument filter;
+  filter["rules"][0]["id"] = true;
+  filter["rules"][0]["field"] = true;
+  filter["rules"][0]["value"] = true;
+  JsonDocument doc;
+  if (deserializeJson(doc, resp, DeserializationOption::Filter(filter))) return -1;
+  int n = 0;
+  for (JsonObjectConst r : doc["rules"].as<JsonArrayConst>()) {
+    if (n >= maxOut) break;
+    snprintf(out[n].id, sizeof(out[n].id), "%s", (const char *)(r["id"] | ""));
+    snprintf(out[n].field, sizeof(out[n].field), "%s", (const char *)(r["field"] | ""));
+    snprintf(out[n].value, sizeof(out[n].value), "%s", (const char *)(r["value"] | ""));
+    n++;
+  }
+  return n;
+}
+
+bool watchAdd(const char *field, const char *value, String &errOut) {
+  JsonDocument doc;
+  doc["field"] = field;
+  doc["value"] = value;
+  String body;
+  serializeJson(doc, body);
+  String resp;
+  bool ok = httpSend("POST", "/api/watches", body, &resp);
+  if (!ok) extractError(resp, errOut);
+  return ok;
+}
+
+bool watchRemove(const char *id) {
+  return httpSend("DELETE", String("/api/watches/") + id, "", nullptr);
+}
+
 bool lookupPhotoUrl(const char *hex, char *out, size_t outLen) {
   out[0] = '\0';
   if (WiFi.status() != WL_CONNECTED) return false;
