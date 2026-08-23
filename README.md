@@ -28,6 +28,14 @@ Also drives a companion **ESP32-S3 AMOLED desk display** — see
    geocoded location, and a live map. A new 7700 takes over the screen for
    2 minutes (footer shows the remaining hold), then joins the normal page
    rotation until it clears. A 7700 inside your area radius stays pinned.
+5. **Following** — when you're following a flight (✈ in the footer), a page
+   joins the rotation with a world map, great-circle route, progress bar and
+   ETA. See [Follow a flight](#follow-a-flight).
+
+Flights in good evening/morning light get a **☀ GOLDEN** tag (sun elevation
+is computed locally), orbiting aircraft get a blinking **CIRCLING** badge,
+the airport board carries the station's **METAR/TAF**, and a clear sky
+advertises the next naked-eye **ISS pass**.
 
 ### Page rotation & manual control
 
@@ -37,6 +45,67 @@ touchscreen to change pages. A manual choice holds its slot before automatic
 rotation resumes — including during an emergency takeover, which reclaims the
 screen after your slot expires. When a flight is overhead the spotlight pins;
 an active alert and an overhead flight alternate every 15 s.
+
+## Spotting log & stats
+
+The server remembers what flies over (SQLite under `data/`): every flyover,
+an all-time airframe **life list**, and thinned track points for the last few
+days. Tap **▤** in the footer for the stats page: today's flyover count and
+hourly histogram, busiest hour, top types/airlines/routes, rarest and newest
+types ever seen, plus a 24-hour track heatmap with a time-sweep **replay**.
+Stats are kept per location cell; demo mode logs to a separate database so
+fake traffic never contaminates a real life list. Disable with
+`SIGHTINGS_ENABLED=false`. Track points are purged after
+`TRACK_RETENTION_HOURS` (default 72); flyovers and the life list are forever.
+
+## Watch list & phone notifications (no Home Assistant needed)
+
+Tap **◉** to manage server-side watch rules: aircraft type, airline, callsign
+prefix, registration or hex — or the built-in detectors: **circling
+aircraft** (orbiting helicopters, holding stacks), **any emergency squawk**,
+or **first-ever aircraft type** (from the spotting log). Modifiers: within
+N NM, overhead only, golden light only. Matches:
+
+- toast on every connected dashboard (and are spoken when voice is on);
+- push to your phone via [ntfy](https://ntfy.sh) — set
+  `NTFY_URL=https://ntfy.sh/<your-secret-topic>` on the server, install the
+  free ntfy app, subscribe to the topic. No accounts, no Home Assistant;
+- POST as JSON to a generic `WEBHOOK_URL` for everything else.
+
+The same aircraft won't re-notify the same rule for 6 hours.
+
+## Follow a flight
+
+Tap **✈** and enter a callsign *as broadcast* (`QFA12`, not `QF12`). The
+server tracks it anywhere in the world via adsb.lol's callsign endpoint —
+follows are polled round-robin, one upstream request per minute total, and
+dead-reckoned between polls. The FOLLOWING page shows a world map with the
+dashed great-circle route, live position, progress bar, distance to go and
+ETA. Landings are detected and announced; oceanic coverage gaps honestly show
+"NO COVERAGE" with the last known position. Follows expire after 24 h and are
+capped by `MAX_FOLLOWS`.
+
+## "What's that plane?" (phone)
+
+Hear a jet, grab your phone: `http://<server>:8000/whatsthat` shows a compass
+arrow and "LOOK NW · UP 55°" pointing your eyes at the nearest aircraft, its
+route and details, and a tap-list of everything else nearby. GPS and compass
+need HTTPS (or an iOS permission tap); on plain LAN HTTP it falls back to the
+saved dashboard location and a north-up arrow.
+
+## Extras
+
+- **Voice announcements** — the 🔇 footer toggle speaks flyovers, watch
+  matches, follow landings and new 7700s (browser speech synthesis; off by
+  default, remembered per device).
+- **Airport weather** — the board shows the airport's decoded METAR summary
+  and the raw METAR/TAF strings (aviationweather.gov: free, keyless, public
+  domain; cached 10 min).
+- **ISS passes** — CelesTrak orbital elements propagated locally (sgp4);
+  `/api/sky` lists the next 48 h of passes with naked-eye-visible ones
+  flagged.
+- **Local receiver** — parked design for polling your own readsb/dump1090 at
+  1 s intervals: [docs/LOCAL-RECEIVER.md](docs/LOCAL-RECEIVER.md).
 
 Data sources:
 
@@ -55,6 +124,10 @@ Data sources:
   (CC0) synced into a local SQLite database instead (no photos).
 - **Airport board** — [AeroDataBox](https://aerodatabox.com) FIDS, cached and
   refreshed every 20 min (free tier friendly), paused overnight.
+- **Airport weather** — [aviationweather.gov](https://aviationweather.gov)
+  METAR/TAF (US Government work, public domain), cached 10 min per station.
+- **ISS elements** — [CelesTrak](https://celestrak.org) GP data, cached and
+  refreshed twice daily; pass geometry computed locally.
 
 ## Run
 
@@ -123,12 +196,19 @@ Each distinct location costs one upstream poll loop (see `MAX_LOCATIONS`).
 | `/?view=board` | force the airport board |
 | `/?lat=&lon=&radius=&area=&airport=` | view another location (see above) |
 | `/admin` | device-fleet admin page (needs `ADMIN_TOKEN` set) |
+| `/whatsthat` | phone page: compass arrow + elevation to the nearest aircraft |
 | `/locate` | phone GPS helper for portal setup (HTTPS only) |
 | `/api/health` | health + product-mode flag |
 | `/api/overhead` | raw aircraft snapshot JSON (accepts location params) |
 | `/api/board` | cached board JSON (accepts `airport=`) |
 | `/api/alerts` | current global squawk-7700 aircraft (accepts `lat`/`lon`) |
 | `/api/config` | server default config + data attribution |
+| `/api/stats` | spotting-log statistics (accepts location params) |
+| `/api/history/tracks` | recent track points for the stats map (`hours=`) |
+| `/api/watches` | watch rules + recent matches (GET/POST/DELETE) |
+| `/api/follow` | followed flights (GET/POST/DELETE) |
+| `/api/wx` | board airport METAR/TAF (accepts `airport=`) |
+| `/api/sky` | sun/light state + upcoming ISS passes |
 | `/api/logo/{iata}` | cached airline logo |
 | `/api/fw/latest` | OTA manifest (404 until a release is published) |
 | `POST /api/demo/flyover` | spawn a demo flyover (400 unless `DEMO_MODE=true`) |
@@ -173,6 +253,12 @@ All via `.env` — see [.env.example](.env.example). Key settings:
 | `AERODATABOX_API_KEY` | *(empty = board shows no data)* | FIDS data key |
 | `BOARD_QUIET_START/END` | `23` / `5` | skip board refreshes overnight |
 | `PRODUCT_MODE` | `false` | hosted/commercial mode: commercially-licensed data sources only |
+| `SIGHTINGS_ENABLED` | `true` | spotting log (flyovers, life list, tracks) in `data/sightings.db` |
+| `TRACK_RETENTION_HOURS` | `72` | how long stats-map track points are kept |
+| `NTFY_URL` | *(empty)* | ntfy topic URL for watch push notifications |
+| `WEBHOOK_URL` | *(empty)* | generic JSON webhook for watch notifications |
+| `MAX_FOLLOWS` | `5` | cap on concurrently followed flights |
+| `FOLLOW_POLL_SECONDS` | `60` | follow-a-flight poll interval (round-robin, one request total) |
 | `MAX_LOCATIONS` | `50` | cap on concurrently-polled device/view locations (LRU-evicted at the cap) |
 | `MAX_AIRPORTS` | `20` | cap on concurrently-refreshed airport boards — this is an AeroDataBox spend limit |
 | `REQUIRE_DEVICE_TOKEN` | `false` | gate data endpoints on provisioned device tokens |
@@ -195,6 +281,12 @@ distinct location gets its own poll loop (idle ones are reaped). With
 - `GET /api/board` — cached arrivals/departures (`airport=` IATA or ICAO)
 - `GET /api/alerts` — aircraft squawking 7700 worldwide (distances from `lat`/`lon`)
 - `GET /api/config` — server default radii/airport + ODbL data attribution
+- `GET /api/stats` — spotting-log stats for the location's grid cell
+- `GET /api/history/tracks` — recent track points (`hours=`, capped at retention)
+- `GET/POST /api/watches`, `DELETE /api/watches/{id}` — watch rules + recent matches
+- `GET/POST /api/follow`, `DELETE /api/follow/{callsign}` — followed flights
+- `GET /api/wx` — board airport METAR/TAF (10-min cache)
+- `GET /api/sky` — sun/light state + next 48 h of ISS passes
 - `GET /api/health` — health + product-mode flag
 - `GET /api/logo/{iata}` — airline logo, cached server-side for 30 days
 - `GET /api/fw/latest` — OTA manifest; firmware images under `/fw/`
@@ -202,7 +294,9 @@ distinct location gets its own poll loop (idle ones are reaped). With
 - `GET /api/devices` — admin: fleet list (also rendered at `/admin`)
 - `POST /api/demo/flyover` — demo mode only: spawn a scripted flyover
 - `POST /api/demo/emergency` — demo mode only: spawn a scripted 7700
-- `WS /ws` — push updates; accepts the same location params (used by the frontend and devices)
+- `WS /ws` — push updates; accepts the same location params (used by the
+  frontend and devices). Frame types: `overhead` (includes `sun` light state
+  and recent `watch_events`), `board`, `alerts`, `follow`.
 
 ## Licence
 

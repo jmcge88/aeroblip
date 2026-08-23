@@ -18,6 +18,10 @@ integration and serves the airport board alone.
 | **Airport board** (arrivals/departures FIDS) | AeroDataBox | AeroDataBox | Paid plan | **Only paid integration.** Scales per *airport* (~54 calls/airport/day at 20-min refresh with quiet hours), not per device |
 | **Global 7700 watch** | adsb.lol squawk endpoint | adsb.lol only — **no fallback** | ODbL | Free |
 | **7700 place names** (reverse geocode) | bigdatacloud.net client API | same | Free client tier | Free |
+| **Airport weather** (METAR/TAF on the board) | aviationweather.gov | same | US Government work, public domain | Free, no key |
+| **ISS orbital elements** (pass predictions) | CelesTrak GP data | same | Freely redistributable | Free, no key |
+| **Follow-a-flight** (per-callsign global query) | adsb.lol callsign endpoint | same | ODbL (shared throttle budget with positions) | Free |
+| **Watch notifications** (phone push) | user-configured ntfy topic / webhook | same | User's own service | Free (ntfy.sh) |
 | **Airline logos** | logostream.dev (`LOGO_URL_TEMPLATE`), 30-day server cache | images.kiwi.com | logostream free tier (terms unconfirmed, see below) | Free tier |
 
 ### How the metadata path works (product mode)

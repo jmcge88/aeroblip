@@ -202,7 +202,6 @@ function draw() {
     el("arrow").setAttribute("transform", `rotate(${Math.round(rot)} 50 50)`);
     el("north-label").textContent = heading == null ? "N" : "";
     const up = elevationDeg(a);
-    const dir = a.heading_cardinal ? "" : "";
     const cards = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
     const lookDir = brg != null ? cards[Math.round(brg / 22.5) % 16] : "?";
     el("look").innerHTML =
