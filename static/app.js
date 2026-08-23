@@ -237,7 +237,7 @@ function connect() {
   };
   ws.onerror = () => ws.close();
 }
-connect();
+// connect() is called at the very end of this file - see the boot block.
 
 /* ---------- squawk 7500/7600/7700 alerts ---------- */
 function isAlert(a) {
@@ -393,9 +393,6 @@ els.pageDots.addEventListener("click", (e) => {
   const p = e.target.closest("[data-page]")?.dataset.page;
   if (p) selectPage(p);
 });
-
-setInterval(render, 1000); // drive rotation, countdowns and linger without new data
-render(); // first paint immediately - the loading state must not wait a tick
 
 els.flyoverBtn.addEventListener("click", () => {
   fetch("/api/demo/flyover", { method: "POST" });
@@ -1642,3 +1639,13 @@ function renderBoard(showDepartures) {
       </tr>`;
   }).join(""));
 }
+
+/* ---------- Boot ----------------------------------------------------------
+   Last on purpose: render() and the websocket handlers touch module-level
+   let/const state declared throughout this file, and running them before the
+   whole script has executed hits declarations still in their temporal dead
+   zone - which once shipped as a dashboard that rendered nothing. Nothing
+   above this block may call render() or connect() at load time. */
+connect();
+setInterval(render, 1000); // drive rotation, countdowns and linger without new data
+render(); // first paint immediately - the loading state must not wait a tick
