@@ -722,6 +722,7 @@ static void netTask(void *) {
         xSemaphoreGive(dataLock);
         g_dirty = true;
       }
+      vTaskDelay(pdMS_TO_TICKS(150)); // see the note below: don't chain TLS handshakes
     }
     if (!wsAlive && (now - lastBoard >= POLL_BOARD_MS || lastBoard == 0)) {
       lastBoard = now;
@@ -732,6 +733,7 @@ static void netTask(void *) {
         xSemaphoreGive(dataLock);
         g_dirty = true;
       }
+      vTaskDelay(pdMS_TO_TICKS(150));
     }
     static uint32_t lastAlerts = 0;
     if (!wsAlive && (now - lastAlerts >= POLL_ALERTS_MS || lastAlerts == 0)) {
@@ -743,9 +745,23 @@ static void netTask(void *) {
         xSemaphoreGive(dataLock);
         g_dirty = true;
       }
+      vTaskDelay(pdMS_TO_TICKS(150));
     }
     // Follow-a-flight normally rides the ws "follow" frame; HTTP fallback
     // only kicks in when the socket is down, same pattern as the others.
+    //
+    // wx/sky (METAR, ISS passes) are deliberately NOT polled from the device.
+    // A crash was traced to a task-watchdog trip on this task: on the first
+    // pass after boot, overhead+board+alerts+follow+wx+sky could all become
+    // eligible in the same iteration, and each is a full HTTPS/TLS handshake
+    // (product builds verify the pinned cert - real crypto work, not the
+    // skipped-verification dev-build path). Six of those back-to-back,
+    // compounded by a websocket reconnect needing a seventh, was enough
+    // sustained CPU-bound work on core 0 to starve the idle task long enough
+    // to trip the watchdog. wx/sky add nothing the wall tablet doesn't
+    // already show, so they're cut here rather than just delayed - fewer
+    // always-on HTTPS clients is the fix, not a smarter schedule for them.
+    // (The web dashboard still gets both from the server directly.)
     static uint32_t lastFollow = 0;
     if (!wsAlive && (now - lastFollow >= POLL_FOLLOW_MS || lastFollow == 0)) {
       lastFollow = now;
@@ -756,29 +772,9 @@ static void netTask(void *) {
         xSemaphoreGive(dataLock);
         g_dirty = true;
       }
-    }
-    // Weather and ISS passes have no ws frame - always plain HTTP, but slow
-    static uint32_t lastWx = 0;
-    if (now - lastWx >= POLL_WX_MS || lastWx == 0) {
-      lastWx = now;
-      WxData tmp;
-      if (fetchWx(tmp)) {
-        xSemaphoreTake(dataLock, portMAX_DELAY);
-        g_wx = tmp;
-        xSemaphoreGive(dataLock);
-        g_dirty = true;
-      }
-    }
-    static uint32_t lastSky = 0;
-    if (now - lastSky >= POLL_SKY_MS || lastSky == 0) {
-      lastSky = now;
-      SkyData tmp;
-      if (fetchSky(tmp)) {
-        xSemaphoreTake(dataLock, portMAX_DELAY);
-        g_sky = tmp;
-        xSemaphoreGive(dataLock);
-        g_dirty = true;
-      }
+      // Give the scheduler a real gap after a full TLS handshake instead of
+      // chaining straight into whatever else this pass also decided to do.
+      vTaskDelay(pdMS_TO_TICKS(250));
     }
     servicePhoto();
     serviceLogos();
