@@ -428,6 +428,23 @@ main { flex: 1; min-height: 0; overflow: hidden; }
 
 #board-airport { font-size: 2.2vh; color: var(--text-dim); letter-spacing: 0.15em; }
 
+/* METAR/TAF strip under the board header */
+#board-wx {
+  padding: 0.6vh 1vw 1vh;
+  border-bottom: 1px solid #1c2530;
+  margin-bottom: 0.5vh;
+}
+.wx-summary { font-size: 2.2vh; color: var(--green); letter-spacing: 0.06em; }
+.wx-raw {
+  font-size: 1.7vh;
+  color: var(--text-dim);
+  margin-top: 0.4vh;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wx-taf { opacity: 0.75; }
+
 .board-table {
   width: 100%;
   border-collapse: collapse;

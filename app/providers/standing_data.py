@@ -33,7 +33,7 @@ DEFAULT_URL = "https://github.com/vradarserver/standing-data/archive/refs/heads/
 _SCHEMA = """
 CREATE TABLE routes   (callsign TEXT PRIMARY KEY, airline_code TEXT, airport_codes TEXT);
 CREATE TABLE airports (code TEXT PRIMARY KEY, name TEXT, icao TEXT, iata TEXT,
-                       location TEXT, country TEXT);
+                       location TEXT, country TEXT, lat REAL, lon REAL);
 CREATE TABLE airlines (code TEXT, name TEXT, icao TEXT, iata TEXT);
 CREATE INDEX airlines_code ON airlines(code);
 CREATE INDEX airlines_icao ON airlines(icao);
@@ -78,7 +78,8 @@ def _insert_rows(conn: sqlite3.Connection, table: str, fields: list[str],
 _DATASETS = {
     "routes": ("routes", ["Callsign", "AirlineCode", "AirportCodes"], None),
     "airports": ("airports",
-                 ["Code", "Name", "ICAO", "IATA", "Location", "CountryISO2"], None),
+                 ["Code", "Name", "ICAO", "IATA", "Location", "CountryISO2",
+                  "Latitude", "Longitude"], None),
     "airlines": ("airlines", ["Code", "Name", "ICAO", "IATA"], None),
     # Fake model types (-GND ground vehicles, -TWR fixed installations) are
     # not aircraft; leave them out.
@@ -139,6 +140,18 @@ class StandingDataMeta:
     def _connect(self) -> None:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # Schema drift: a database built before airport coordinates were
+        # imported must be rebuilt, not queried. Leaving _conn unset marks the
+        # provider not ready, which triggers the blocking first-boot sync in
+        # main.py (or the hourly retry in run()).
+        try:
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(airports)")}
+        except sqlite3.Error:
+            cols = set()
+        if "lat" not in cols:
+            log.info("standing-data: schema outdated (no airport coordinates) - resyncing")
+            self._conn.close()
+            self._conn = None
 
     def _one(self, sql: str, *params) -> sqlite3.Row | None:
         if self._conn is None:
@@ -225,6 +238,15 @@ class StandingDataMeta:
             "airline": airline["name"] if airline else None,
             "airline_iata": (airline["iata"] or None) if airline else None,
         }
+
+    def airport_lookup(self, code: str) -> dict | None:
+        """Airport by ICAO, IATA or schema code: names plus coordinates.
+        Used to resolve METAR stations and to draw follow-a-flight routes."""
+        code = code.strip().upper()
+        row = self._one(
+            "SELECT code, name, icao, iata, location, lat, lon FROM airports"
+            " WHERE icao=? OR iata=? OR code=? LIMIT 1", code, code, code)
+        return dict(row) if row is not None else None
 
     def _airport(self, code: str) -> tuple[str, str | None]:
         """(display code, city/name) for a schema-01 airport code."""

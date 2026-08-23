@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from app import config
 from app.providers.meta import AdsbdbMeta, LayeredMeta
 from app.providers.standing_data import StandingDataMeta
+from app.providers.wx import WxProvider
 from app.services.alerts import GlobalAlerts
 from app.services.devices import DeviceRegistry
 from app.services.hub import LocationHub, TooManyLocations, cell_key
@@ -40,6 +41,10 @@ meta_cache: CachedMeta
 http_client: httpx.AsyncClient
 sightings: Sightings | None = None
 watches: WatchManager
+standing_meta: StandingDataMeta
+wx: WxProvider
+_wx_cache: dict[str, tuple[float, dict | None]] = {}
+WX_TTL = 600  # seconds; aviationweather.gov is free but not ours to hammer
 devices = DeviceRegistry(str(Path(config.DATA_DIR) / "devices.db"))
 _logo_misses: dict[str, float] = {}
 
@@ -77,7 +82,9 @@ async def lifespan(app: FastAPI):
         # airframes don't vary by location, so the fleet must not re-buy them
         # per device, and they must survive reaping and restarts.
         meta = meta_cache = CachedMeta(meta, Path(config.DATA_DIR) / "meta_cache.json")
-        global sightings, watches
+        global sightings, watches, standing_meta, wx
+        standing_meta = standing
+        wx = WxProvider(client)
         watches = WatchManager(Path(config.DATA_DIR) / "watches.json", client)
         if config.SIGHTINGS_ENABLED:
             # Demo traffic goes to its own log - fake Qantas flights must
@@ -252,6 +259,28 @@ async def tracks_endpoint(request: Request):
         hours = 24
     hours = min(config.TRACK_RETENTION_HOURS, max(1.0, hours))
     return await asyncio.to_thread(sightings.tracks, cell_key(lat, lon), hours)
+
+
+@app.get("/api/wx", dependencies=[Depends(require_device)])
+async def wx_endpoint(request: Request):
+    """METAR/TAF for the board airport (aviationweather.gov, cached 10 min).
+    IATA codes are resolved to ICAO through the standing-data airports table."""
+    _, _, _, _, airport = parse_location(request.query_params)
+    icao = airport if len(airport) == 4 else None
+    if icao is None:
+        row = standing_meta.airport_lookup(airport)
+        icao = (row or {}).get("icao") or None
+    if not icao:
+        raise HTTPException(status_code=404, detail="no ICAO code for airport")
+    ts, cached = _wx_cache.get(icao, (0.0, None))
+    if time.time() - ts >= WX_TTL:
+        cached = await wx.fetch(icao)
+        _wx_cache[icao] = (time.time(), cached)
+        if len(_wx_cache) > 100:
+            _wx_cache.clear()
+    if cached is None:
+        raise HTTPException(status_code=404, detail="no weather for station")
+    return cached
 
 
 @app.get("/api/watches", dependencies=[Depends(require_device)])

@@ -1321,11 +1321,52 @@ function drawReplay(T) {
   }
 }
 
+/* ---------- Airport weather strip (METAR/TAF via /api/wx) -----------------
+   Fetched lazily the first time the board renders and refreshed every ten
+   minutes - matching the server's own cache TTL, so the strip stays current
+   without adding upstream load. */
+let wxData = null;
+let wxFetchedAt = 0;
+let wxInFlight = false;
+
+function ensureWx() {
+  if (wxInFlight || Date.now() - wxFetchedAt < 600_000) return;
+  wxInFlight = true;
+  fetch("/api/wx" + locQuery())
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => { wxData = j; wxFetchedAt = Date.now(); render(); })
+    .catch(() => { wxFetchedAt = Date.now(); })  // retry in 10 min, not a loop
+    .finally(() => { wxInFlight = false; });
+}
+
+function wxSummary(w) {
+  const wind = w.wind_dir != null && w.wind_kt != null
+    ? `WIND ${w.wind_dir === "VRB" ? "VRB" : String(Math.round(w.wind_dir)).padStart(3, "0")}/${String(Math.round(w.wind_kt)).padStart(2, "0")}${w.gust_kt ? `G${Math.round(w.gust_kt)}` : ""}KT`
+    : null;
+  const vis = w.visibility_sm != null ? `VIS ${w.visibility_sm} SM` : null;
+  const temp = w.temp_c != null
+    ? `${Math.round(w.temp_c)}°C${w.dewpoint_c != null ? `/${Math.round(w.dewpoint_c)}°C` : ""}` : null;
+  const qnh = w.qnh_hpa ? `QNH ${w.qnh_hpa}` : null;
+  return [wind, vis, w.wx, w.clouds, temp, qnh].filter(Boolean).map(esc).join(" · ");
+}
+
+function renderWx() {
+  const el = document.getElementById("board-wx");
+  if (!wxData || !wxData.raw) { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  setHTML(el, `
+    <div class="wx-summary">${wxSummary(wxData)}</div>
+    <div class="wx-raw">${esc(wxData.raw)}</div>
+    ${wxData.taf ? `<div class="wx-raw wx-taf">${esc(wxData.taf)}</div>` : ""}`);
+}
+
 function renderBoard(showDepartures) {
   const rows = (showDepartures ? board.departures : board.arrivals) || [];
   els.boardDirection.textContent = showDepartures ? "DEPARTURES" : "ARRIVALS";
   els.boardAirport.textContent = board.airport
     ? `${board.airport.name.toUpperCase()} ${board.airport.icao}` : "";
+  ensureWx();
+  renderWx();
 
   const now = Date.now() - 30 * 60 * 1000; // keep recent past 30 min on the board
   const visible = rows
