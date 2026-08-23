@@ -286,7 +286,9 @@ function buildPages() {
   if (alertAircraft()) pages.push("emergency");
   if (spotlightDue()) pages.push("air");
   pages.push("nearby");
-  if (followsData.follows.length) pages.push("follow");
+  // One page (and footer dot) per followed flight, not one shared page -
+  // otherwise the second follow hides behind the chips and looks lost
+  for (const f of followsData.follows) pages.push(`follow:${f.callsign}`);
   if (boardRows("departures").length) pages.push("departures");
   if (boardRows("arrivals").length) pages.push("arrivals");
   return pages;
@@ -348,7 +350,7 @@ function choosePage() {
   if (anyAlert) rot.push("emergency");
   if (overhead.aircraft.length > 0 || (lastTraffic && now - lastTraffic < RADAR_LINGER_MS))
     rot.push("nearby");
-  if (followsData.follows.length) rot.push("follow");
+  for (const f of followsData.follows) rot.push(`follow:${f.callsign}`);
   if (boardRows("departures").length) rot.push("departures");
   if (boardRows("arrivals").length) rot.push("arrivals");
   if (!rot.length) { currentPage = "nearby"; return null; } // CLEAR SKIES placeholder
@@ -423,8 +425,11 @@ function render() {
   // expired between rotation ticks (plane left the ring, linger ran out)
   else if (page === "air") view = spotlightDue() ? "spotlight" : "nearby";
   else if (page === "nearby") view = "nearby";
-  else if (page === "follow") view = followsData.follows.length ? "follow" : "nearby";
-  else view = "board";
+  else if (page.startsWith("follow")) {
+    view = followsData.follows.length ? "follow" : "nearby";
+    const cs = page.split(":")[1];
+    if (cs) selectedFollowCs = cs;
+  } else view = "board";
   if (FORCED_VIEW === "spotlight") view = "spotlight";
   else if (FORCED_VIEW === "nearby") view = "nearby";
 
@@ -489,6 +494,9 @@ const locEls = {
 };
 
 locEls.btn.onclick = () => {
+  const wasHidden = locEls.panel.classList.contains("hidden");
+  closePanels();
+  if (!wasHidden) return;
   const o = locSettings();
   locEls.latlon.value = o.lat && o.lon ? `${o.lat}, ${o.lon}` : "";
   locEls.radius.value = o.radius ?? "";
@@ -1026,8 +1034,14 @@ function renderFollow() {
 
 document.getElementById("follow-info").addEventListener("click", (e) => {
   const cs = e.target.dataset?.cs;
-  if (cs) { selectedFollowCs = cs; render(); }
+  if (cs) selectPage(`follow:${cs}`); // its own page - hold the slot like a swipe
 });
+
+/* Only one footer panel at a time: opening any closes the others */
+function closePanels() {
+  for (const id of ["follow-panel", "watch-panel", "loc-panel"])
+    document.getElementById(id).classList.add("hidden");
+}
 
 /* Great-circle points between two coordinates, for the route polyline */
 function gcPoints(lat1, lon1, lat2, lon2, n = 64) {
@@ -1127,7 +1141,9 @@ const followEls = {
 };
 
 followEls.btn.onclick = () => {
-  followEls.panel.classList.toggle("hidden");
+  const wasHidden = followEls.panel.classList.contains("hidden");
+  closePanels();
+  if (wasHidden) followEls.panel.classList.remove("hidden");
   followEls.note.textContent = "";
   renderFollowList();
 };
@@ -1285,7 +1301,9 @@ const watchEls = {
 };
 
 watchEls.btn.onclick = () => {
-  watchEls.panel.classList.toggle("hidden");
+  const wasHidden = watchEls.panel.classList.contains("hidden");
+  closePanels();
+  if (wasHidden) watchEls.panel.classList.remove("hidden");
   watchEls.note.textContent = "";
   if (!watchEls.panel.classList.contains("hidden")) loadWatches();
 };
@@ -1374,6 +1392,7 @@ let statsPlaying = null; // interval id while replaying
 let statsLastT = 0;
 
 statsEls.btn.onclick = () => {
+  closePanels();
   statsEls.overlay.classList.remove("hidden");
   loadStats();
 };

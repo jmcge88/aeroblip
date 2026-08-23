@@ -32,11 +32,22 @@ struct Aircraft {
   char photo[128]; // thumbnail URL, only present for in-ring (enriched) aircraft
   char squawk[6];
   char emergency[12]; // readsb emergency field ("none", "general", ...)
+  bool circling;      // server-side orbit detection (helicopters, holding)
 };
 
 // True when the aircraft is squawking an emergency (7500/7600/7700 or a
 // non-none emergency broadcast, medevac "lifeguard" excluded)
 bool aircraftAlert(const Aircraft &a);
+
+// Watch-rule matches ride along inside overhead snapshots (see the server's
+// services/watches.py) - the device toasts and chimes on new ones.
+#define MAX_WATCH_EVENTS 4
+struct WatchEvent {
+  char id[14];
+  char kind[12];   // "type"|"airline"|...|"circling"|"squawk"|"new_type"
+  char title[44];
+  char message[72];
+};
 
 struct OverheadData {
   Aircraft aircraft[MAX_AIRCRAFT];
@@ -47,6 +58,9 @@ struct OverheadData {
   float area_radius_nm;
   char provider[12];
   uint32_t updated;     // server epoch seconds
+  bool sun_golden;      // photo-worthy light right now (server sun block)
+  WatchEvent watch_events[MAX_WATCH_EVENTS];
+  int n_watch_events;
   bool valid;
   uint32_t fetched_ms;  // millis() of last successful fetch
 };
