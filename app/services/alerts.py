@@ -15,7 +15,7 @@ import httpx
 
 from app import config
 from app.providers import radar
-from app.services.poller import cardinal, haversine_nm
+from app.services.poller import cardinal, dead_reckon, haversine_nm
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +35,9 @@ SQUAWK_URLS_PRODUCT = SQUAWK_URLS[:1]
 GEO_URL = ("https://api.bigdatacloud.net/data/reverse-geocode-client"
            "?latitude={lat}&longitude={lon}&localityLanguage=en")
 POLL_SECONDS = 60
+# Dead-reckoning cap for rendered snapshots: one missed poll's worth. Past
+# this the positions freeze (and "updated" goes stale) instead of gliding on.
+EXTRAP_MAX_S = 90.0
 # Per-client cap. Held aircraft are kept unsorted-by-anyone's-home until
 # snapshot_for() ranks them for the requester, so a device in Europe served by
 # an Australian-configured server sees the alerts nearest *it*. The stored list
@@ -97,16 +100,27 @@ class GlobalAlerts:
 
     def snapshot_for(self, lat: float, lon: float) -> dict:
         """The global snapshot with distances recomputed from the requester's
-        location (device fleets: each unit has its own home)."""
+        location (device fleets: each unit has its own home). Positions are
+        dead-reckoned to render time, same contract as the overhead poller's
+        snapshot_for: "updated" is the reckoned time, "polled" the poll time."""
+        polled = self.snapshot.get("updated")
+        now = time.time()
+        base_age = now - polled if polled else None
+        live = base_age is not None and 0 <= base_age <= EXTRAP_MAX_S
         aircraft = []
         for a in self.snapshot["aircraft"]:
-            a = dict(a)
+            if live:
+                a = dead_reckon(a, min(base_age + (a.get("pos_age_s") or 0),
+                                       EXTRAP_MAX_S))
+            else:
+                a = dict(a)
             if a.get("lat") is not None and a.get("lon") is not None:
                 a["distance_nm"] = round(haversine_nm(lat, lon, a["lat"], a["lon"]), 1)
             aircraft.append(a)
         aircraft.sort(key=lambda a: a.get("distance_nm") or 9e9)
         aircraft = aircraft[:MAX_ALERTS]
-        return {**self.snapshot, "aircraft": aircraft, "count": len(aircraft)}
+        return {**self.snapshot, "aircraft": aircraft, "count": len(aircraft),
+                "updated": int(now) if live else polled, "polled": polled}
 
     async def run(self) -> None:
         while True:

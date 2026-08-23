@@ -424,7 +424,10 @@ async def ws(websocket: WebSocket):
                 last_board_update = board.snapshot.get("updated")
                 board.touch()
                 await websocket.send_json({"type": "board", "data": board.snapshot})
-            if alerts.snapshot.get("updated") != last_alerts_update:
+            # While an alert is active, resend on every push so its
+            # dead-reckoned position animates; otherwise only on poll changes.
+            if (alerts.snapshot.get("updated") != last_alerts_update
+                    or alerts.snapshot["aircraft"]):
                 last_alerts_update = alerts.snapshot.get("updated")
                 await websocket.send_json(
                     {"type": "alerts", "data": alerts.snapshot_for(lat, lon)})

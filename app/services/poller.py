@@ -18,6 +18,36 @@ CARDINALS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
 
 ROUTE_RETRY_SECONDS = 3600  # re-attempt unknown routes at most hourly
 
+# Server-side dead reckoning: every rendered snapshot (REST reads and ws
+# pushes alike) projects each aircraft to "now" from its last fix, and the
+# run() loop re-pushes reckoned frames to ws subscribers between upstream
+# polls - so ESP devices and Home Assistant look live without reimplementing
+# the math. Capped so stale data (rate-limit stand-downs, provider outages)
+# freezes honestly instead of ghost-gliding.
+EXTRAP_MAX_S = 45.0
+LIVE_PUSH_SECONDS = 5.0
+
+
+def dead_reckon(a: dict, age_s: float) -> dict:
+    """A copy of aircraft dict `a` projected age_s seconds along its track at
+    its ground speed, altitude ticked by its vertical rate. Straight-line and
+    flat-earth: worst case mid-turn error at approach speeds is a few hundred
+    metres, corrected at the next real fix."""
+    out = dict(a)
+    gs, track = a.get("ground_speed_kt"), a.get("track")
+    if (isinstance(gs, (int, float)) and gs > 50 and isinstance(track, (int, float))
+            and a.get("lat") is not None and a.get("lon") is not None):
+        d_nm = gs * age_s / 3600.0
+        rad = math.radians(track)
+        out["lat"] = round(a["lat"] + d_nm * math.cos(rad) / 60.0, 6)
+        out["lon"] = round(a["lon"] + d_nm * math.sin(rad)
+                           / (60.0 * math.cos(math.radians(a["lat"]))), 6)
+    rate, alt = a.get("vertical_rate_fpm"), a.get("altitude_ft")
+    if isinstance(rate, (int, float)) and isinstance(alt, (int, float)):
+        out["altitude_ft"] = max(0, round(alt + rate * age_s / 60.0))
+    out["pos_age_s"] = 0  # the age is reckoned in; consumers must not re-apply it
+    return out
+
 # Pollers are shared by every client in a ~5 km grid cell (see services.hub),
 # so the upstream query and the enrichment gates are padded beyond what the
 # cell centre alone would need: a client can sit up to ~2 NM off centre, and
@@ -183,12 +213,26 @@ class OverheadPoller:
         from each aircraft's own lat/lon against the client's coordinates;
         traffic outside the client's area (fetched for the pad, or for a
         bigger-area neighbour in the same cell) is dropped.
+
+        Positions are dead-reckoned to render time (see dead_reckon), so REST
+        readers and between-poll ws pushes see current positions, not the last
+        fix. "updated" reflects the reckoned time; "polled" keeps the honest
+        upstream poll time. Once the poll data is older than EXTRAP_MAX_S,
+        reckoning stops and "updated" goes stale with it.
         """
+        polled = self.snapshot["updated"]
+        now = time.time()
+        base_age = now - polled if polled else None
+        live = base_age is not None and 0 <= base_age <= EXTRAP_MAX_S
         aircraft = []
         for a in self.snapshot["aircraft"]:
             if a.get("lat") is None or a.get("lon") is None:
                 continue
-            a = dict(a)
+            if live:
+                a = dead_reckon(a, min(base_age + (a.get("pos_age_s") or 0),
+                                       EXTRAP_MAX_S))
+            else:
+                a = dict(a)
             dist = round(haversine_nm(lat, lon, a["lat"], a["lon"]), 2)
             if dist > area_nm:
                 continue
@@ -199,6 +243,8 @@ class OverheadPoller:
         aircraft.sort(key=lambda a: a["distance_nm"])
         return {**self.snapshot,
                 "aircraft": aircraft,
+                "updated": int(now) if live else polled,
+                "polled": polled,
                 "overhead_count": sum(1 for a in aircraft if a["overhead"]),
                 "overhead_radius_nm": overhead_nm,
                 "area_radius_nm": area_nm}
@@ -210,8 +256,17 @@ class OverheadPoller:
                 await self._poll_once()
             except Exception:
                 log.exception("overhead poll failed")
-            elapsed = time.monotonic() - started
-            await asyncio.sleep(max(1.0, config.POLL_SECONDS - elapsed))
+            # Animate between polls: re-push dead-reckoned frames to ws
+            # subscribers every LIVE_PUSH_SECONDS (snapshot_for reckons at
+            # render time). Costs no upstream requests - just re-renders.
+            while True:
+                remaining = config.POLL_SECONDS - (time.monotonic() - started)
+                if remaining <= LIVE_PUSH_SECONDS:
+                    await asyncio.sleep(max(1.0, remaining))
+                    break
+                await asyncio.sleep(LIVE_PUSH_SECONDS)
+                if self._listeners and self.snapshot["aircraft"]:
+                    self._notify()
 
     async def _poll_once(self) -> None:
         if config.DEMO_MODE:
