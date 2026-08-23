@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS seen (
 );
 CREATE TABLE IF NOT EXISTS track_points (
   ts INTEGER NOT NULL, cell TEXT NOT NULL, hex TEXT NOT NULL,
-  lat REAL, lon REAL, altitude_ft INTEGER
+  lat REAL, lon REAL, altitude_ft INTEGER,
+  callsign TEXT, origin TEXT, destination TEXT
 );
 CREATE INDEX IF NOT EXISTS track_cell_ts ON track_points(cell, ts);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -76,6 +77,14 @@ class Sightings:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
+        # A database from before callsign/route were tracked per point: add the
+        # columns in place rather than force a fresh table (OperationalError
+        # means a prior run already migrated it).
+        for col in ("callsign", "origin", "destination"):
+            try:
+                self._conn.execute(f"ALTER TABLE track_points ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass
         self._conn.execute("INSERT OR IGNORE INTO meta VALUES ('created_at', ?)",
                            (str(int(time.time())),))
         self._conn.commit()
@@ -107,10 +116,12 @@ class Sightings:
                 if (a.get("lat") is not None
                         and now - self._last_point.get(key, 0) >= TRACK_POINT_INTERVAL_S):
                     self._last_point[key] = now
+                    route = a.get("route") or {}
                     self._conn.execute(
-                        "INSERT INTO track_points VALUES (?,?,?,?,?,?)",
-                        (now, cell, hexcode, a["lat"], a["lon"],
-                         a.get("altitude_ft")))
+                        "INSERT INTO track_points (ts, cell, hex, lat, lon, altitude_ft,"
+                        " callsign, origin, destination) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (now, cell, hexcode, a["lat"], a["lon"], a.get("altitude_ft"),
+                         a.get("callsign"), route.get("origin"), route.get("destination")))
             self._conn.commit()
         except sqlite3.Error:
             log.exception("sightings write failed")
@@ -258,15 +269,15 @@ class Sightings:
         conn = self._reader()
         try:
             rows = conn.execute(
-                "SELECT ts, hex, lat, lon, altitude_ft FROM track_points"
-                " WHERE cell=? AND ts>=? ORDER BY ts LIMIT ?",
+                "SELECT ts, hex, lat, lon, altitude_ft, callsign, origin, destination"
+                " FROM track_points WHERE cell=? AND ts>=? ORDER BY ts LIMIT ?",
                 (cell, since, MAX_TRACK_POINTS)).fetchall()
         finally:
             conn.close()
         return {"since": since,
                 "truncated": len(rows) == MAX_TRACK_POINTS,
-                "points": [[r["ts"], r["hex"], r["lat"], r["lon"],
-                            r["altitude_ft"]] for r in rows]}
+                "points": [[r["ts"], r["hex"], r["lat"], r["lon"], r["altitude_ft"],
+                            r["callsign"], r["origin"], r["destination"]] for r in rows]}
 
     async def run(self) -> None:
         """Purge expired track points (flyovers and the life list are forever)."""

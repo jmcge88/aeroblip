@@ -15,12 +15,14 @@ CST9220 touch). Shows live data from the flight-info server on the LAN:
   button to close (auto-hides after 60 s).
 - **Departures / Arrivals views** — the airport board with time, flight, city, gate
   and colour-coded status.
-- **Following view** — joins the rotation whenever a flight is followed from
-  the web dashboard (no on-device management): status, route, progress bar,
-  ETA, and the same embedded world map used for far-away emergencies. Cycles
-  every 15 s if more than one flight is followed - double-tap anywhere on
-  the page to jump to the next one immediately, which holds for 2 minutes
-  before automatic cycling resumes.
+- **Following view** — joins the rotation whenever a flight is followed
+  (up to 5 at once): status, route, progress bar, ETA, and the same embedded
+  world map used for far-away emergencies. Cycles every 15 s if more than one
+  flight is followed - double-tap anywhere on the page to jump to the next
+  one immediately, which holds for 2 minutes before automatic cycling
+  resumes. Add or remove followed flights from the web dashboard's ✈ panel,
+  or right from the device's own settings page - see
+  [Follows and watch rules](#follows-and-watch-rules-on-device).
 - **Emergency view (squawk 7700)** — the server's global 7700 watch feeds a
   red-alert screen: callsign, airline, route, aircraft, altitude/speed/heading,
   location and distance. A new global 7700 takes over the screen for 2 minutes
@@ -45,8 +47,9 @@ one 30 s slot before the takeover reclaims the screen):
 
 Server-side watch-rule matches (type/airline/callsign/registration/hex, or the
 circling/emergency-squawk/first-ever-type detectors - managed from the web
-dashboard's ◉ panel) pop up as an amber banner across the bottom of whatever
-screen is showing, for about 8 seconds. A circling aircraft (orbiting
+dashboard's ◉ panel, or from the device's own settings page, see below) pop up
+as an amber banner across the bottom of whatever screen is showing, for about
+8 seconds. A circling aircraft (orbiting
 helicopters, holding patterns) is flagged inline wherever it appears - amber
 callsign and a CIRC/CIRCLING tag - and the overhead spotlight shows a GOLDEN
 LIGHT tag when the sun is at a photo-friendly angle. The board screens gain a
@@ -69,6 +72,23 @@ and at what volume, the timezone (15 presets, DST-aware) and the quiet-hours
 window are all chosen in the setup portal and can be changed anytime at
 **http://&lt;device-ip&gt;/param** - the device keeps a small web settings page
 running (also lets you change the server URL without reflashing).
+
+## Follows and watch rules, on device
+
+The settings page (**http://&lt;device-ip&gt;/param**) also lists the flights
+you're currently following and your watch rules, each with a **Remove**
+button, plus an **Add** control for both - a callsign field for follows, and
+a field-type dropdown (callsign/registration/hex/type/airline, or the
+circling/emergency-squawk/first-ever-type detectors) with a value box for
+watch rules. No account needed - it talks to the same server your device is
+already configured against, using the device's own token, so what you add or
+remove here is exactly what shows up on the web dashboard's ✈ and ◉ panels.
+
+Every list refresh and every add/remove is a single request fired only when
+you click something on the page - the device never polls these in the
+background. (0.10.0 briefly shipped unconditional background polling for
+other data and it crash-looped the board within a few minutes; 0.10.1 removed
+it, and every screen added since follows the same on-demand rule.)
 
 ## Setup
 
@@ -109,7 +129,11 @@ pio device monitor
 - Data comes from `GET /api/overhead` (every 5 s), `/api/board` (every 60 s),
   `/api/alerts` (every 60 s), `/api/follow` (every 60 s, HTTP fallback only -
   normally rides the websocket), `/api/wx` (10 min), `/api/sky` (30 min) and
-  `/api/config` (once at boot). No auth; the server must be reachable on the LAN.
+  `/api/config` (once at boot). The device sends its provisioned token as
+  `X-Device-Token` on every request when it has one, which is what scopes its
+  follows and watch rules to it on servers with `REQUIRE_DEVICE_TOKEN=true`;
+  otherwise it talks to the server unauthenticated. Either way the server must
+  be reachable on the LAN.
 - The display dims during quiet hours and static labels drift by a couple of
   pixels to slow AMOLED burn-in. For a 24/7 installation consider a nightly deep
   sleep or screen-off window - AMOLED panels showing a mostly static board will
