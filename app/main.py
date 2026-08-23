@@ -21,8 +21,10 @@ from app.providers.meta import AdsbdbMeta, LayeredMeta
 from app.providers.standing_data import StandingDataMeta
 from app.services.alerts import GlobalAlerts
 from app.services.devices import DeviceRegistry
-from app.services.hub import LocationHub, TooManyLocations
+from app.services.hub import LocationHub, TooManyLocations, cell_key
 from app.services.meta_cache import CachedMeta
+from app.services.sightings import Sightings
+from app.services.watches import WatchManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -36,6 +38,8 @@ hub: LocationHub
 alerts: GlobalAlerts
 meta_cache: CachedMeta
 http_client: httpx.AsyncClient
+sightings: Sightings | None = None
+watches: WatchManager
 devices = DeviceRegistry(str(Path(config.DATA_DIR) / "devices.db"))
 _logo_misses: dict[str, float] = {}
 
@@ -73,7 +77,15 @@ async def lifespan(app: FastAPI):
         # airframes don't vary by location, so the fleet must not re-buy them
         # per device, and they must survive reaping and restarts.
         meta = meta_cache = CachedMeta(meta, Path(config.DATA_DIR) / "meta_cache.json")
-        hub = LocationHub(client, meta)
+        global sightings, watches
+        watches = WatchManager(Path(config.DATA_DIR) / "watches.json", client)
+        if config.SIGHTINGS_ENABLED:
+            # Demo traffic goes to its own log - fake Qantas flights must
+            # never seed a real life list.
+            db_name = "sightings_demo.db" if config.DEMO_MODE else "sightings.db"
+            sightings = Sightings(Path(config.DATA_DIR) / db_name,
+                                  config.TRACK_RETENTION_HOURS)
+        hub = LocationHub(client, meta, sightings=sightings, watches=watches)
         alerts = GlobalAlerts(client, meta=meta, product=config.PRODUCT_MODE)
         if config.DEMO_MODE:
             log.warning("DEMO_MODE enabled - overhead traffic and board data are fabricated")
@@ -85,12 +97,16 @@ async def lifespan(app: FastAPI):
         # on demand via poller_for anyway (see the 429s this used to cause).
         tasks = [asyncio.create_task(alerts.run()), asyncio.create_task(hub.reaper()),
                  asyncio.create_task(standing.run())]
+        if sightings is not None:
+            tasks.append(asyncio.create_task(sightings.run()))
         try:
             yield
         finally:
             for t in tasks:
                 t.cancel()
             meta.flush()  # don't throw away lookups on shutdown
+            if sightings is not None:
+                sightings.close()
             log.info("metadata cache on exit: %s", meta.stats())
 
 
@@ -212,6 +228,52 @@ async def alerts_endpoint(request: Request):
     """Aircraft anywhere in the world currently squawking 7700."""
     lat, lon, _, _, _ = parse_location(request.query_params)
     return alerts.snapshot_for(lat, lon)
+
+
+@app.get("/api/stats", dependencies=[Depends(require_device)])
+async def stats_endpoint(request: Request):
+    """Spotting-log statistics for a location's grid cell: today's flyovers
+    and hourly histogram, plus the all-time life list."""
+    if sightings is None:
+        raise HTTPException(status_code=404, detail="sightings disabled")
+    lat, lon, _, _, _ = parse_location(request.query_params)
+    return await asyncio.to_thread(sightings.stats, cell_key(lat, lon))
+
+
+@app.get("/api/history/tracks", dependencies=[Depends(require_device)])
+async def tracks_endpoint(request: Request):
+    """Recent position samples for the stats page's heatmap/replay map."""
+    if sightings is None:
+        raise HTTPException(status_code=404, detail="sightings disabled")
+    lat, lon, _, _, _ = parse_location(request.query_params)
+    try:
+        hours = float(request.query_params.get("hours", 24))
+    except ValueError:
+        hours = 24
+    hours = min(config.TRACK_RETENTION_HOURS, max(1.0, hours))
+    return await asyncio.to_thread(sightings.tracks, cell_key(lat, lon), hours)
+
+
+@app.get("/api/watches", dependencies=[Depends(require_device)])
+async def list_watches(request: Request):
+    """Watch rules plus this location's recent matches."""
+    lat, lon, _, _, _ = parse_location(request.query_params)
+    return {"rules": watches.rules(), "recent": watches.recent(cell_key(lat, lon))}
+
+
+@app.post("/api/watches", dependencies=[Depends(require_device)])
+async def add_watch(payload: dict):
+    try:
+        return {"ok": True, "rule": watches.add(payload)}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/watches/{rule_id}", dependencies=[Depends(require_device)])
+async def delete_watch(rule_id: str):
+    if not watches.remove(rule_id):
+        raise HTTPException(status_code=404)
+    return {"ok": True}
 
 
 @app.post("/api/demo/flyover")

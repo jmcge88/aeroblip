@@ -13,7 +13,7 @@
        internet to render its own map chrome. static/vendor/README.md records
        the version and the upstream SRI hashes these files were checked against. -->
   <link rel="stylesheet" href="/static/vendor/leaflet.css?v=1.9.4">
-  <link rel="stylesheet" href="/static/style.css?v=22">
+  <link rel="stylesheet" href="/static/style.css?v=23">
 </head>
 <body>
   <header id="header">
@@ -71,10 +71,56 @@
     <span id="data-credit" style="opacity:.55">flight data &copy;
       <a href="https://adsb.lol" style="color:inherit">adsb.lol</a> contributors (ODbL)</span>
     <span id="footer-nav"><span id="flip-count"></span><nav id="page-dots"></nav>
-      <button id="loc-btn" title="Set view location">&#8982;</button></span>
+      <button id="voice-btn" class="ftr-btn" title="Voice announcements">&#128263;</button>
+      <button id="stats-btn" class="ftr-btn" title="Spotting log">&#9636;</button>
+      <button id="watch-btn" class="ftr-btn" title="Watch list">&#9673;</button>
+      <button id="loc-btn" class="ftr-btn" title="Set view location">&#8982;</button></span>
   </footer>
 
-  <div id="loc-panel" class="hidden">
+  <!-- Watch-rule matches pop up here (and go to ntfy/webhook server-side) -->
+  <div id="toasts"></div>
+
+  <!-- Spotting log: stats + heatmap/replay, fed by /api/stats and
+       /api/history/tracks. Opened from the footer; not part of the page
+       rotation. -->
+  <div id="stats-overlay" class="hidden">
+    <div class="stats-head">
+      <span class="stats-title">SPOTTING LOG</span>
+      <span id="stats-cell"></span>
+      <button id="stats-close">&#10005;</button>
+    </div>
+    <div id="stats-body"><div class="empty-msg loading"><span class="spinner"></span>LOADING…</div></div>
+  </div>
+
+  <!-- Watch list: server-side rules; matches toast here and push via
+       ntfy/webhook if the server has NTFY_URL / WEBHOOK_URL configured. -->
+  <div id="watch-panel" class="ftr-panel hidden">
+    <h3>WATCH LIST</h3>
+    <div id="watch-rules"></div>
+    <label for="watch-field">Watch for</label>
+    <select id="watch-field">
+      <option value="type">Aircraft type (ICAO code)</option>
+      <option value="airline">Airline (IATA code or name)</option>
+      <option value="callsign">Callsign prefix</option>
+      <option value="registration">Registration</option>
+      <option value="hex">Hex / Mode-S</option>
+      <option value="circling">Circling aircraft</option>
+      <option value="squawk">Any emergency squawk</option>
+      <option value="new_type">First-ever aircraft type</option>
+    </select>
+    <label for="watch-value" id="watch-value-label">Value</label>
+    <input id="watch-value" placeholder="A388">
+    <label for="watch-within">Only within NM (optional)</label>
+    <input id="watch-within" type="number" min="1" max="500" placeholder="any distance">
+    <label class="watch-check"><input id="watch-overhead" type="checkbox"> overhead only</label>
+    <label class="watch-check"><input id="watch-golden" type="checkbox"> golden light only</label>
+    <div class="loc-row">
+      <button id="watch-add" type="button">Add watch</button>
+    </div>
+    <p id="watch-note"></p>
+  </div>
+
+  <div id="loc-panel" class="ftr-panel hidden">
     <h3>VIEW LOCATION</h3>
     <label for="loc-latlon">Location (lat, lon)</label>
     <input id="loc-latlon" placeholder="-33.8688, 151.2093">
@@ -95,6 +141,6 @@
   </div>
 
   <script src="/static/vendor/leaflet.js?v=1.9.4"></script>
-  <script src="/static/app.js?v=30"></script>
+  <script src="/static/app.js?v=31"></script>
 </body>
 </html>

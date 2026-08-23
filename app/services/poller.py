@@ -162,10 +162,14 @@ class OverheadPoller:
     def __init__(self, provider: RadarProvider, meta, board_cache=None, *,
                  lat: float | None = None, lon: float | None = None,
                  overhead_nm: float | None = None, area_nm: float | None = None,
-                 airport_iata: str | None = None, airport_name: str | None = None):
+                 airport_iata: str | None = None, airport_name: str | None = None,
+                 sightings=None, watches=None, cell: str | None = None):
         self._provider = provider
         self._meta = meta  # AdsbdbMeta or StandingDataMeta (routes/airframes/airlines)
         self._board = board_cache  # BoardCache; used to correct stale route data
+        self._sightings = sightings  # services.sightings.Sightings (spotting log)
+        self._watches = watches      # services.watches.WatchManager
+        self._cell = cell or f"{lat},{lon}"  # sightings/watch record key
         self._lat = config.HOME_LAT if lat is None else lat
         self._lon = config.HOME_LON if lon is None else lon
         self._overhead_nm = config.OVERHEAD_RADIUS_NM if overhead_nm is None else overhead_nm
@@ -270,7 +274,11 @@ class OverheadPoller:
                 "area_radius_nm": area_nm,
                 # Light quality at the viewer's exact home: displays tag
                 # golden-hour flyovers, watch rules can require good light.
-                "sun": light_info(lat, lon, now)}
+                "sun": light_info(lat, lon, now),
+                # Recent watch-rule matches for this cell ride along so
+                # dashboards can toast/announce them without a new channel.
+                "watch_events": (self._watches.recent(self._cell)
+                                 if self._watches else [])}
 
     async def run(self) -> None:
         while True:
@@ -308,6 +316,15 @@ class OverheadPoller:
             provider = self._provider.active
         self._flag_circling(aircraft)
         aircraft.sort(key=lambda a: a["distance_nm"] if a["distance_nm"] is not None else 999)
+        # The spotting log and watch rules see the same enriched aircraft the
+        # displays do. Sightings events (flyover / first-ever type) feed the
+        # watch check so those are notifiable without a second detector.
+        events: list[dict] = []
+        if self._sightings is not None:
+            events = self._sightings.record(self._cell, aircraft)
+        if self._watches is not None:
+            self._watches.check(self._cell, aircraft,
+                                light_info(self._lat, self._lon), events)
         self.snapshot = {
             "aircraft": aircraft,
             "updated": int(time.time()),

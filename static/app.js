@@ -197,12 +197,15 @@ function connect() {
       overheadLoaded = true;
       if (msg.data.aircraft.length > 0) lastTraffic = Date.now();
       if (msg.data.overhead_count > 0) lastOverhead = Date.now();
+      announceOverhead(msg.data);
+      processWatchEvents(msg.data.watch_events || []);
       render();
     } else if (msg.type === "board") {
       board = msg.data;
       els.mockBadge.classList.toggle("hidden", !board.mock);
       render();
     } else if (msg.type === "alerts") {
+      announceAlerts(msg.data);
       alertsRaw = msg.data;
       render();
     }
@@ -919,6 +922,403 @@ function statusClass(status) {
   if (s.includes("land") || s.includes("arrived") || s.includes("departed")) return "status-landed";
   if (s.includes("expected") || s.includes("checkin") || s.includes("check-in") || s.includes("gate")) return "status-ontime";
   return "";
+}
+
+/* ---------- Toasts, voice announcements and the watch list ----------------
+   Watch rules live on the SERVER (evaluated in its poll loop, pushed to
+   ntfy/webhook independently of any browser); this panel just manages them
+   over /api/watches. Matches ride the overhead snapshots as watch_events and
+   surface here as toasts - and speech, if voice announcements are on. */
+const toastsEl = document.getElementById("toasts");
+
+function showToast(title, msg, cls = "") {
+  const el = document.createElement("div");
+  el.className = `toast ${cls}`;
+  el.innerHTML = `<div class="t-title">${esc(title)}</div>` +
+    (msg ? `<div class="t-msg">${esc(msg)}</div>` : "");
+  toastsEl.appendChild(el);
+  while (toastsEl.children.length > 4) toastsEl.firstChild.remove();
+  setTimeout(() => el.remove(), 12000);
+}
+
+/* Voice: Web Speech synthesis, entirely client-side and off by default.
+   Persisted per browser - a kiosk tablet keeps its setting. */
+let voiceOn = localStorage.getItem("voiceOn") === "1";
+const voiceBtn = document.getElementById("voice-btn");
+
+function updateVoiceBtn() {
+  voiceBtn.textContent = voiceOn ? "\u{1F50A}" : "\u{1F507}";
+  voiceBtn.classList.toggle("on", voiceOn);
+}
+updateVoiceBtn();
+
+voiceBtn.onclick = () => {
+  voiceOn = !voiceOn;
+  localStorage.setItem("voiceOn", voiceOn ? "1" : "0");
+  updateVoiceBtn();
+  if (voiceOn) speak("Voice announcements on.");
+  else if ("speechSynthesis" in window) speechSynthesis.cancel();
+};
+
+function speak(text) {
+  if (!voiceOn || !("speechSynthesis" in window) || !text) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-AU";
+  speechSynthesis.speak(u);
+}
+
+function voiceFlyover(a) {
+  const airline = a.airline?.airline;
+  const cs = a.callsign || a.registration || "unknown aircraft";
+  const model = a.info
+    ? [a.info.manufacturer, a.info.model].filter(Boolean).join(" ")
+    : (a.description || a.type || "");
+  const route = a.route?.origin_name && a.route?.destination_name
+    ? ` from ${a.route.origin_name} to ${a.route.destination_name}` : "";
+  const alt = a.altitude_ft != null
+    ? `, ${(Math.round(a.altitude_ft / 100) * 100).toLocaleString()} feet` : "";
+  return `${airline ? airline + " " : ""}${cs} overhead${model ? ", " + model : ""}${route}${alt}.`;
+}
+
+/* Announce ring entries by diffing overhead hexes between server pushes.
+   The first snapshot seeds silently - a page reload must not re-announce
+   whatever is already up there. */
+let prevOverheadHexes = null;
+function announceOverhead(data) {
+  const aircraft = data.aircraft || [];
+  if (prevOverheadHexes) {
+    for (const a of aircraft) {
+      if (a.overhead && !prevOverheadHexes.has(a.hex)) speak(voiceFlyover(a));
+    }
+  }
+  prevOverheadHexes = new Set(aircraft.filter((a) => a.overhead).map((a) => a.hex));
+}
+
+let prevAlertHexes = null;
+function announceAlerts(data) {
+  const aircraft = data.aircraft || [];
+  if (prevAlertHexes) {
+    for (const a of aircraft) {
+      if (prevAlertHexes.has(a.hex)) continue;
+      const what = a.squawk === "7600" ? "radio failure"
+        : a.squawk === "7500" ? "unlawful interference" : "emergency";
+      speak(`Alert. ${a.callsign || a.registration || "an aircraft"} is squawking ${what}` +
+        (a.place ? ` near ${a.place}.` : "."));
+    }
+  }
+  prevAlertHexes = new Set(aircraft.map((a) => a.hex));
+}
+
+const seenWatchEvents = new Set();
+let watchEventsSeeded = false;
+function processWatchEvents(events) {
+  for (const ev of events) {
+    if (!ev.id || seenWatchEvents.has(ev.id)) continue;
+    seenWatchEvents.add(ev.id);
+    if (!watchEventsSeeded) continue; // history from before this page loaded
+    showToast(ev.title, ev.message, ev.kind === "squawk" ? "squawk" : "");
+    speak(`${ev.title}. ${(ev.message || "").replaceAll("·", ",")}`);
+  }
+  watchEventsSeeded = true;
+  if (seenWatchEvents.size > 500) seenWatchEvents.clear();
+}
+
+/* Watch panel: manage the server-side rules */
+const watchEls = {
+  btn: document.getElementById("watch-btn"),
+  panel: document.getElementById("watch-panel"),
+  rules: document.getElementById("watch-rules"),
+  field: document.getElementById("watch-field"),
+  value: document.getElementById("watch-value"),
+  valueLabel: document.getElementById("watch-value-label"),
+  within: document.getElementById("watch-within"),
+  overhead: document.getElementById("watch-overhead"),
+  golden: document.getElementById("watch-golden"),
+  add: document.getElementById("watch-add"),
+  note: document.getElementById("watch-note"),
+};
+
+watchEls.btn.onclick = () => {
+  watchEls.panel.classList.toggle("hidden");
+  watchEls.note.textContent = "";
+  if (!watchEls.panel.classList.contains("hidden")) loadWatches();
+};
+
+watchEls.field.onchange = () => {
+  const detector = ["circling", "squawk", "new_type"].includes(watchEls.field.value);
+  watchEls.value.classList.toggle("hidden", detector);
+  watchEls.valueLabel.classList.toggle("hidden", detector);
+};
+
+function watchRuleLabel(r) {
+  const names = { circling: "circling aircraft", squawk: "any emergency squawk",
+                  new_type: "first-ever type" };
+  let s = names[r.field] || `${r.field} = ${r.value}`;
+  const mods = [];
+  if (r.within_nm) mods.push(`≤${r.within_nm} NM`);
+  if (r.overhead_only) mods.push("overhead");
+  if (r.golden_only) mods.push("golden");
+  return s + (mods.length ? ` (${mods.join(", ")})` : "");
+}
+
+async function loadWatches() {
+  try {
+    const r = await fetch("/api/watches" + locQuery());
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    setHTML(watchEls.rules, j.rules.map((r2) =>
+      `<div class="watch-rule"><span>${esc(watchRuleLabel(r2))}</span>` +
+      `<button data-id="${esc(r2.id)}" title="Remove">✕</button></div>`).join("")
+      || '<p class="watch-empty">No watches yet. Matches show here and push via ntfy/webhook if the server has them configured.</p>');
+  } catch (e) {
+    watchEls.note.textContent = `Could not load watches (${e.message})`;
+  }
+}
+
+watchEls.rules.addEventListener("click", async (e) => {
+  const id = e.target.dataset?.id;
+  if (!id) return;
+  await fetch(`/api/watches/${encodeURIComponent(id)}` + locQuery(), { method: "DELETE" });
+  loadWatches();
+});
+
+watchEls.add.onclick = async () => {
+  const body = {
+    field: watchEls.field.value,
+    value: watchEls.value.value.trim(),
+    within_nm: watchEls.within.value ? +watchEls.within.value : null,
+    overhead_only: watchEls.overhead.checked,
+    golden_only: watchEls.golden.checked,
+  };
+  try {
+    const r = await fetch("/api/watches" + locQuery(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.detail || `HTTP ${r.status}`);
+    }
+    watchEls.value.value = "";
+    watchEls.within.value = "";
+    watchEls.note.textContent = "";
+    loadWatches();
+  } catch (e) {
+    watchEls.note.textContent = e.message;
+  }
+};
+
+/* ---------- Spotting log overlay (footer button): /api/stats + replay ----
+   Everything here is read-on-open: no polling, no cost while closed. The
+   track map draws the last 24 h of thinned position samples as a heatmap of
+   dots and can replay them: a time cursor sweeps the window and each
+   aircraft's position is interpolated between its recorded samples. */
+const statsEls = {
+  btn: document.getElementById("stats-btn"),
+  overlay: document.getElementById("stats-overlay"),
+  close: document.getElementById("stats-close"),
+  body: document.getElementById("stats-body"),
+  cell: document.getElementById("stats-cell"),
+};
+let statsMap = null;
+let statsMarkers = {};   // hex -> replay marker
+let statsIndex = null;   // hex -> {pts: [[ts, lat, lon], ...], ptr}
+let statsPlaying = null; // interval id while replaying
+let statsLastT = 0;
+
+statsEls.btn.onclick = () => {
+  statsEls.overlay.classList.remove("hidden");
+  loadStats();
+};
+statsEls.close.onclick = () => {
+  statsEls.overlay.classList.add("hidden");
+  stopReplay();
+  if (statsMap) { statsMap.remove(); statsMap = null; statsMarkers = {}; }
+};
+
+async function loadStats() {
+  statsEls.body.innerHTML =
+    '<div class="empty-msg loading"><span class="spinner"></span>LOADING…</div>';
+  const q = locQuery();
+  try {
+    const [r1, r2] = await Promise.all([
+      fetch("/api/stats" + q),
+      fetch("/api/history/tracks" + (q ? q + "&" : "?") + "hours=24"),
+    ]);
+    if (!r1.ok) throw new Error(`HTTP ${r1.status}`);
+    const stats = await r1.json();
+    const tracks = r2.ok ? await r2.json() : { points: [] };
+    renderStats(stats, tracks);
+  } catch (e) {
+    statsEls.body.innerHTML =
+      `<div class="empty-msg">NO SPOTTING LOG (${esc(e.message)})</div>`;
+  }
+}
+
+function liRow(k, sub, v) {
+  return `<li><span class="k">${k}${sub ? ` <span class="sub">${sub}</span>` : ""}</span><span class="v">${v}</span></li>`;
+}
+
+const EMPTY_LI = '<li><span class="k sub">nothing yet</span></li>';
+
+function fmtDay(ts) {
+  return ts ? new Date(ts * 1000).toLocaleDateString() : "–";
+}
+
+function hourlySVG(hourly) {
+  const max = Math.max(...hourly, 1);
+  const bars = hourly.map((c, h) => {
+    const bh = (c / max) * 22;
+    return `<rect class="bar${c === max && c > 0 ? " max" : ""}" x="${(h * 4.15 + 0.3).toFixed(2)}" y="${(25 - bh).toFixed(2)}" width="3.4" height="${bh.toFixed(2)}"></rect>` +
+      (h % 3 === 0 ? `<text x="${(h * 4.15 + 2).toFixed(2)}" y="29" text-anchor="middle">${String(h).padStart(2, "0")}</text>` : "");
+  }).join("");
+  return `<svg viewBox="0 0 100 30">${bars}</svg>`;
+}
+
+function renderStats(s, tracks) {
+  const t = s.today, a = s.alltime;
+  statsEls.cell.textContent = a.since ? `TRACKING SINCE ${fmtDay(a.since)}` : "";
+  const tiles = [
+    ["FLYOVERS TODAY", t.flyovers, ""],
+    ["AIRCRAFT TODAY", t.unique_aircraft, ""],
+    ["BUSIEST HOUR", t.busiest_hour ?? "–", ""],
+    ["FLYOVERS EVER", a.flyovers, "alltime"],
+    ["AIRFRAMES", a.unique_aircraft, "alltime"],
+    ["TYPES", a.unique_types, "alltime"],
+    ["AIRLINES", a.unique_airlines, "alltime"],
+  ].map(([l, v, cls]) =>
+    `<div class="stats-tile ${cls}"><label>${l}</label><span>${esc(v ?? "–")}</span></div>`).join("");
+
+  const cols = [
+    ["TOP TYPES TODAY", t.top_types.map((r) =>
+      liRow(esc(r.type), esc(r.description || ""), r.c))],
+    ["TOP AIRLINES TODAY", t.top_airlines.map((r) =>
+      liRow(esc(r.airline), esc(r.airline_iata || ""), r.c))],
+    ["TOP ROUTES TODAY", t.top_routes.map((r) =>
+      liRow(`${esc(r.origin)} → ${esc(r.destination)}`, "", r.c))],
+    ["TOP TYPES ALL-TIME", a.top_types.map((r) =>
+      liRow(esc(r.type), esc(r.description || ""), r.c))],
+    ["RAREST TYPES", a.rarest_types.map((r) =>
+      liRow(esc(r.type), esc(r.description || ""), `${r.c}×`))],
+    ["NEWEST TYPES", a.recent_first_types.map((r) =>
+      liRow(esc(r.type), esc(r.description || ""), fmtDay(r.f)))],
+  ].map(([hdr, lis]) =>
+    `<div><div class="stats-section-hdr">${hdr}</div><ul class="stats-list">${lis.join("") || EMPTY_LI}</ul></div>`).join("");
+
+  const nPts = (tracks.points || []).length;
+  statsEls.body.innerHTML = `
+    <div class="stats-tiles">${tiles}</div>
+    <div class="stats-section-hdr">FLYOVERS BY HOUR (TODAY)</div>
+    <div id="stats-hourly">${hourlySVG(t.hourly)}</div>
+    <div class="stats-cols">${cols}</div>
+    <div class="stats-section-hdr">SKY TRACKS – LAST 24 H (${nPts} SAMPLES${tracks.truncated ? ", TRUNCATED" : ""})</div>
+    <div id="stats-map"></div>
+    <div class="stats-map-bar">
+      <button id="replay-btn" type="button">▶ REPLAY</button>
+      <input id="replay-slider" type="range">
+      <span id="replay-time">NOW</span>
+    </div>
+    <div class="stats-note">Dots: amber below 10,000 ft, green above. Drag the slider or press replay to sweep the day.</div>`;
+  initStatsMap(tracks);
+}
+
+function initStatsMap(tracks) {
+  const el = document.getElementById("stats-map");
+  if (!el || typeof L === "undefined") return;
+  if (statsMap) { statsMap.remove(); statsMarkers = {}; }
+  statsMap = L.map(el, { attributionControl: false });
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+              { maxZoom: 12 }).addTo(statsMap);
+  const pts = tracks.points || [];
+  if (!pts.length) { statsMap.setView([-27.4, 153.1], 8); return; }
+  // Heatmap layer: cap the dot count so old tablets keep up
+  const step = Math.max(1, Math.ceil(pts.length / 8000));
+  const canvas = L.canvas({ padding: 0.3 });
+  const bounds = [];
+  for (let i = 0; i < pts.length; i += step) {
+    const [, , lat, lon, alt] = pts[i];
+    bounds.push([lat, lon]);
+    L.circleMarker([lat, lon], {
+      renderer: canvas, radius: 1.4, stroke: false,
+      fillColor: alt != null && alt < 10000 ? "#ffb400" : "#3ddc84",
+      fillOpacity: 0.3,
+    }).addTo(statsMap);
+  }
+  statsMap.fitBounds(L.latLngBounds(bounds).pad(0.05));
+  // Replay index: per-aircraft sample lists in time order
+  statsIndex = {};
+  for (const [ts, hex, lat, lon] of pts) {
+    (statsIndex[hex] ??= { pts: [], ptr: 0 }).pts.push([ts, lat, lon]);
+  }
+  setupReplay(tracks);
+}
+
+function setupReplay(tracks) {
+  const btn = document.getElementById("replay-btn");
+  const slider = document.getElementById("replay-slider");
+  const t0 = tracks.since, t1 = Math.floor(Date.now() / 1000);
+  slider.min = t0; slider.max = t1; slider.value = t1;
+  slider.oninput = () => { pauseReplay(); drawReplay(+slider.value); };
+  btn.onclick = () => {
+    if (statsPlaying) { pauseReplay(); return; }
+    btn.textContent = "⏸ PAUSE";
+    if (+slider.value >= t1 - 120) slider.value = t0; // replay from the start
+    const stepS = (t1 - t0) / 1200; // whole window sweeps in ~2 minutes
+    statsPlaying = setInterval(() => {
+      const next = +slider.value + stepS;
+      if (next >= t1) { pauseReplay(); slider.value = t1; drawReplay(t1); return; }
+      slider.value = next;
+      drawReplay(next);
+    }, 100);
+  };
+}
+
+function pauseReplay() {
+  if (statsPlaying) clearInterval(statsPlaying);
+  statsPlaying = null;
+  const btn = document.getElementById("replay-btn");
+  if (btn) btn.textContent = "▶ REPLAY";
+}
+
+function stopReplay() {
+  pauseReplay();
+  statsIndex = null;
+}
+
+function drawReplay(T) {
+  if (!statsIndex || !statsMap) return;
+  const label = document.getElementById("replay-time");
+  if (label) {
+    label.textContent = T >= Date.now() / 1000 - 120 ? "NOW"
+      : new Date(T * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+  if (T < statsLastT) for (const h in statsIndex) statsIndex[h].ptr = 0;
+  statsLastT = T;
+  for (const hex in statsIndex) {
+    const trk = statsIndex[hex];
+    while (trk.ptr < trk.pts.length - 1 && trk.pts[trk.ptr + 1][0] <= T) trk.ptr++;
+    const p = trk.pts[trk.ptr], n = trk.pts[trk.ptr + 1];
+    let pos = null;
+    if (n && p[0] <= T && T <= n[0] && n[0] - p[0] <= 300) {
+      const f = (T - p[0]) / Math.max(1, n[0] - p[0]);
+      pos = [p[1] + (n[1] - p[1]) * f, p[2] + (n[2] - p[2]) * f];
+    } else if (Math.abs(p[0] - T) <= 60) {
+      pos = [p[1], p[2]];
+    }
+    if (pos) {
+      if (!statsMarkers[hex]) {
+        statsMarkers[hex] = L.circleMarker(pos, {
+          radius: 4, stroke: false, fillColor: "#3ddc84", fillOpacity: 0.95,
+        }).addTo(statsMap);
+      } else {
+        statsMarkers[hex].setLatLng(pos);
+      }
+    } else if (statsMarkers[hex]) {
+      statsMap.removeLayer(statsMarkers[hex]);
+      delete statsMarkers[hex];
+    }
+  }
 }
 
 function renderBoard(showDepartures) {

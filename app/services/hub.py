@@ -41,10 +41,19 @@ class TooManyLocations(Exception):
     pass
 
 
+def cell_key(lat: float, lon: float) -> str:
+    """Stable identifier for the grid cell containing (lat, lon) - the key
+    the sightings log and watch events are recorded under, so any endpoint
+    given a lat/lon can find the records its poller wrote."""
+    return f"{round(lat / GRID_DEG)},{round(lon / GRID_DEG)}"
+
+
 class LocationHub:
-    def __init__(self, client: httpx.AsyncClient, meta):
+    def __init__(self, client: httpx.AsyncClient, meta, sightings=None, watches=None):
         self._client = client
         self._meta = meta
+        self._sightings = sightings
+        self._watches = watches
         self._pollers: dict[tuple, dict] = {}
         self._boards: dict[str, dict] = {}
 
@@ -98,7 +107,9 @@ class LocationHub:
                 self._make_radar(), self._meta, board_cache=board,
                 lat=cell_lat * GRID_DEG, lon=cell_lon * GRID_DEG,
                 overhead_nm=overhead_nm, area_nm=area_nm,
-                airport_iata=airport)
+                airport_iata=airport,
+                sightings=self._sightings, watches=self._watches,
+                cell=f"{cell_lat},{cell_lon}")
             entry = {"poller": poller, "board": airport,
                      "task": asyncio.create_task(poller.run())}
             self._pollers[key] = entry

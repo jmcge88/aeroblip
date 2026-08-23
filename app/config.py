@@ -76,6 +76,28 @@ FRAME_ANCESTORS = os.getenv("FRAME_ANCESTORS", "").strip()
 REQUIRE_DEVICE_TOKEN = _bool("REQUIRE_DEVICE_TOKEN")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 
+# Spotting log: flyovers, the airframe "life list" and recent track points,
+# persisted to DATA_DIR/sightings.db (a separate sightings_demo.db in demo
+# mode so fabricated traffic never contaminates the real log). Track points
+# feed the stats page's heatmap/replay and are purged after the retention
+# window; flyovers and the life list are kept forever.
+SIGHTINGS_ENABLED = _bool("SIGHTINGS_ENABLED", "true")
+TRACK_RETENTION_HOURS = float(os.getenv("TRACK_RETENTION_HOURS", "72"))
+
+# Watch notifications (no Home Assistant needed). NTFY_URL is a full topic
+# URL, e.g. https://ntfy.sh/your-secret-topic - the ntfy phone app subscribed
+# to that topic gets push notifications. WEBHOOK_URL receives a JSON POST
+# {"title", "message", "event"} per match. Leave empty to disable; watch
+# matches still reach connected dashboards over the websocket either way.
+NTFY_URL = os.getenv("NTFY_URL", "").strip()
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+
+# Follow-a-flight: global per-callsign trackers (adsb.lol only, sharing the
+# radar throttle budget). Each active follow costs one upstream request per
+# FOLLOW_POLL_SECONDS, so the count is capped.
+MAX_FOLLOWS = int(os.getenv("MAX_FOLLOWS", "5"))
+FOLLOW_POLL_SECONDS = float(os.getenv("FOLLOW_POLL_SECONDS", "60"))
+
 # Writable state (device registry DB, logo cache) and OTA firmware images
 DATA_DIR = os.getenv("DATA_DIR", "data")
 FW_DIR = os.getenv("FW_DIR", "fw")

@@ -524,31 +524,140 @@ td.board-note {
 .em-plane-icon svg { display: block; }
 
 /* ---------- view-location panel ---------- */
-#loc-btn {
+.ftr-btn {
   background: none; border: 1px solid #444; color: #9aa0a6;
   border-radius: 4px; cursor: pointer; margin-left: 10px; font-size: 1rem;
-  line-height: 1.1; padding: 0 6px;
+  line-height: 1.1; padding: 0 6px; font-family: var(--mono);
 }
-#loc-panel {
+.ftr-btn.on { color: var(--amber); border-color: var(--amber-dim); }
+.ftr-panel {
   position: fixed; right: 12px; bottom: 52px; z-index: 1000; width: 250px;
+  max-height: 80vh; overflow-y: auto;
   background: #14181f; border: 1px solid #333; border-radius: 8px;
   padding: 14px 16px; box-shadow: 0 8px 24px rgba(0,0,0,.6);
 }
-#loc-panel h3 { margin: 0 0 4px; color: #ffb000; font-size: .85rem; letter-spacing: .06em; }
-#loc-panel label { display: block; margin-top: 10px; font-size: .72rem; color: #9aa0a6; }
-#loc-panel input {
+.ftr-panel h3 { margin: 0 0 4px; color: #ffb000; font-size: .85rem; letter-spacing: .06em; }
+.ftr-panel label { display: block; margin-top: 10px; font-size: .72rem; color: #9aa0a6; }
+.ftr-panel input, .ftr-panel select {
   width: 100%; box-sizing: border-box; margin-top: 3px; padding: 6px;
   background: #0b0e14; color: #e8e8e8; border: 1px solid #333; border-radius: 4px;
+  font-family: var(--mono);
 }
-#loc-panel button {
+.ftr-panel button {
   margin-top: 10px; padding: 6px 12px; border: 0; border-radius: 4px;
   background: #ffb000; color: #000; font-weight: 600; cursor: pointer;
 }
 #loc-panel #loc-clear { background: #333; color: #e8e8e8; }
 .loc-row { display: flex; gap: 8px; }
-#loc-note { color: #ff6b6b; font-size: .72rem; margin: 8px 0 0; }
+#loc-note, #watch-note { color: #ff6b6b; font-size: .72rem; margin: 8px 0 0; }
+
+/* Watch list panel: existing rules + inline checkboxes */
+#watch-rules { margin-top: 6px; }
+.watch-rule {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 0; border-bottom: 1px solid #222a35;
+  font-size: .78rem; color: #e8e8e8;
+}
+.watch-rule span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watch-rule button {
+  margin: 0; padding: 0 8px; background: #333; color: #e8e8e8; flex-shrink: 0;
+}
+.watch-check {
+  display: flex !important; align-items: center; gap: 6px;
+}
+.watch-check input { width: auto !important; margin: 0 !important; }
+.watch-empty { color: #9aa0a6; font-size: .72rem; margin-top: 6px; }
+
+/* Toast stack: watch matches and other transient announcements */
+#toasts {
+  position: fixed; top: 9vh; right: 12px; z-index: 1100;
+  display: flex; flex-direction: column; gap: 8px; max-width: 360px;
+}
+.toast {
+  background: #14181f; border-left: 5px solid var(--amber); border-radius: 6px;
+  padding: 10px 14px; box-shadow: 0 8px 24px rgba(0,0,0,.6);
+  animation: toast-in 0.25s ease-out;
+}
+.toast .t-title { color: var(--amber); font-weight: 700; font-size: .9rem; letter-spacing: .04em; }
+.toast .t-msg { color: var(--text); font-size: .76rem; margin-top: 3px; }
+.toast.squawk { border-left-color: var(--red); }
+.toast.squawk .t-title { color: var(--red); }
+@keyframes toast-in { from { transform: translateX(30px); opacity: 0; } }
 
 /* ---------- first-load spinner (nearby view) ---------- */
+/* Spotting log overlay: stats tiles, hourly chart, life list, track map */
+#stats-overlay {
+  position: fixed; inset: 0; z-index: 900;
+  background: var(--bg);
+  display: flex; flex-direction: column;
+}
+.stats-head {
+  display: flex; align-items: baseline; gap: 2vw;
+  padding: 2vh 3vw 1vh;
+  border-bottom: 2px solid var(--amber-dim);
+}
+.stats-title {
+  font-size: 3.4vh; font-weight: 700; letter-spacing: 0.35em; color: var(--amber);
+}
+#stats-cell { flex: 1; font-size: 1.8vh; color: var(--text-dim); letter-spacing: 0.1em; }
+#stats-close {
+  background: none; border: 1px solid #444; color: var(--text-dim);
+  border-radius: 4px; cursor: pointer; font-size: 2.4vh; line-height: 1.2;
+  padding: 0.2vh 1.4vw; font-family: var(--mono);
+}
+#stats-body { flex: 1; overflow-y: auto; padding: 2vh 3vw; }
+
+.stats-tiles {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 1.5vh 1.5vw; margin-bottom: 2.5vh;
+}
+.stats-tile {
+  background: var(--panel); border-left: 0.5vh solid var(--amber);
+  border-radius: 0.6vh; padding: 1.4vh 1.2vw;
+}
+.stats-tile label {
+  display: block; font-size: 1.5vh; letter-spacing: 0.2em; color: var(--text-dim);
+}
+.stats-tile span { font-size: 3.6vh; font-weight: 700; color: var(--text); }
+.stats-tile.alltime { border-left-color: var(--text-dim); }
+
+.stats-section-hdr {
+  font-size: 1.8vh; letter-spacing: 0.3em; color: var(--amber);
+  margin: 2.5vh 0 1vh; border-bottom: 1px solid #1c2530; padding-bottom: 0.6vh;
+}
+
+#stats-hourly svg { width: 100%; height: 16vh; display: block; }
+#stats-hourly .bar { fill: var(--amber-dim); }
+#stats-hourly .bar.max { fill: var(--amber); }
+#stats-hourly text { fill: var(--text-dim); font-family: var(--mono); font-size: 3.2px; }
+
+.stats-cols {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1vh 2.5vw;
+}
+.stats-list { list-style: none; }
+.stats-list li {
+  display: flex; justify-content: space-between; gap: 1vw;
+  font-size: 2vh; padding: 0.5vh 0; border-bottom: 1px solid #141b25;
+  color: var(--text);
+}
+.stats-list li .k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stats-list li .v { color: var(--amber); flex-shrink: 0; }
+.stats-list li .sub { color: var(--text-dim); }
+
+#stats-map { height: 46vh; border: 1px solid var(--panel); border-radius: 8px; background: var(--panel); }
+.stats-map-bar {
+  display: flex; align-items: center; gap: 1.5vw; margin-top: 1vh;
+  font-size: 1.8vh; color: var(--text-dim);
+}
+.stats-map-bar input[type=range] { flex: 1; accent-color: var(--amber); }
+.stats-map-bar button {
+  background: none; border: 1px solid var(--amber-dim); color: var(--amber);
+  font-family: var(--mono); font-size: 1.8vh; letter-spacing: 0.1em;
+  padding: 0.3vh 1.4vw; border-radius: 0.4vh; cursor: pointer;
+}
+.stats-note { color: var(--text-dim); font-size: 1.6vh; margin-top: 0.6vh; }
+
 /* Flyover-quality tags: golden light for the photographers, circling for the
    "what is that helicopter doing" crowd */
 .golden-tag { color: #ffd75e; letter-spacing: 0.08em; }
