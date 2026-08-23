@@ -101,6 +101,14 @@ static char g_spotHex[8] = "";
 static PhotoState g_photo = {};
 static uint16_t *g_photoScratch = nullptr;
 
+// Which followed flight the FOLLOWING page is showing. Auto-rotates every
+// ALERT_ALTERNATE_MS when idle; a double-tap on that page advances it
+// manually and holds for MANUAL_HOLD_MS, same convention as manual page
+// choices elsewhere in this firmware.
+static volatile int g_followShownIdx = 0;    // index actually drawn last frame
+static volatile int g_followManualIdx = -1;  // -1 = follow the automatic rotation
+static volatile uint32_t g_followManualSince = 0;
+
 // WebSocket push channel (HTTP polling remains as fallback)
 static websockets::WebsocketsClient ws;
 static volatile bool g_wsConnected = false;
@@ -900,6 +908,26 @@ static void pollTouch() {
       switchView(dx < 0 ? +1 : -1);
     } else if (g_sleeping || g_showInfo) {
       switchView(0); // tap wakes / closes info
+    } else {
+      // A tap that's neither a swipe nor a wake/close gesture: on the
+      // FOLLOWING page, two of them close together advance to the next
+      // followed flight (there's no on-device way to pick one otherwise -
+      // follows are added from the web dashboard).
+      static uint32_t lastTapMs = 0;
+      static int16_t lastTapX = -1000, lastTapY = -1000;
+      uint32_t now = millis();
+      bool doubleTap = (now - lastTapMs < 400) &&
+                       abs(lastX - lastTapX) < 60 && abs(lastY - lastTapY) < 60;
+      lastTapMs = now;
+      lastTapX = lastX;
+      lastTapY = lastY;
+      if (doubleTap && g_view == VIEW_FOLLOW && g_followCount > 1) {
+        lastTapMs = 0; // consumed - a fast third tap starts a fresh pair
+        g_followManualIdx = (g_followShownIdx + 1) % g_followCount;
+        g_followManualSince = now;
+        g_lastInputMs = now;
+        g_dirty = true;
+      }
     }
   }
 }
@@ -1426,9 +1454,18 @@ void loop() {
         ph = g_photo;
         xSemaphoreGive(dataLock);
 
-        // Multiple follows share one page slot; auto-rotate between them
+        // Multiple follows share one page slot. A double-tap picks one and
+        // holds it for MANUAL_HOLD_MS (see pollTouch); otherwise auto-rotate
         // the same way the web app's "also nearby" strip does.
-        int followIdx = fl.count > 1 ? (int)((millis() / ALERT_ALTERNATE_MS) % fl.count) : 0;
+        int followIdx;
+        if (g_followManualIdx >= 0 && g_followManualIdx < fl.count &&
+            millis() - g_followManualSince < MANUAL_HOLD_MS) {
+          followIdx = g_followManualIdx;
+        } else {
+          g_followManualIdx = -1; // hold expired (or index no longer valid): release it
+          followIdx = fl.count > 1 ? (int)((millis() / ALERT_ALTERNATE_MS) % fl.count) : 0;
+        }
+        g_followShownIdx = followIdx;
         UiExtras ex = {&fl, &wx, issLine, activeToast, followIdx};
 
         uiDraw(canvas, g_view, oh, bd, cfg, WiFi.status() == WL_CONNECTED,

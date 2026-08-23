@@ -220,10 +220,14 @@ class StandingDataMeta:
                         " WHERE callsign=?", code + number)
         if row is None and len(code) == 2:
             # Pilot entered the IATA form; the DB keys on the ICAO code.
-            icao = self._one("SELECT icao FROM airlines WHERE iata=? AND icao!=''", code)
+            # airline_icao_for_iata only answers when unambiguous (some IATA
+            # codes, e.g. QF, cover several regional codeshare operators) -
+            # an ambiguous case just falls through to the "unknown" return
+            # below, same as it always has.
+            icao = self.airline_icao_for_iata(code)
             if icao:
                 row = self._one("SELECT airline_code, airport_codes FROM routes"
-                                " WHERE callsign=?", icao["icao"] + number)
+                                " WHERE callsign=?", icao + number)
         if row is None:
             return None
         codes = [c for c in row["airport_codes"].split("-") if c]
@@ -247,6 +251,31 @@ class StandingDataMeta:
             "SELECT code, name, icao, iata, location, lat, lon FROM airports"
             " WHERE icao=? OR iata=? OR code=? LIMIT 1", code, code, code)
         return dict(row) if row is not None else None
+
+    def airline_icao_for_iata(self, iata: str) -> str | None:
+        """3-letter ICAO prefix for a 2-letter IATA airline code (JQ -> JST).
+        Used to correct a follow callsign entered as the IATA flight number -
+        what humans and Google Flights show - rather than the ICAO-prefixed
+        callsign a transponder actually broadcasts.
+
+        Many IATA codes are shared across a mainline carrier and its
+        regional/codeshare operators - QF alone covers six distinct airlines
+        in this data (Qantas mainline plus five regional partners flying
+        QantasLink-branded routes). Guessing wrong would feed an actively
+        incorrect callsign to adsb.lol, so this only returns an answer when
+        exactly one ICAO code carries that IATA code; anything ambiguous
+        returns None and the caller leaves the callsign as typed.
+        """
+        if self._conn is None:
+            return None
+        try:
+            rows = self._conn.execute(
+                "SELECT DISTINCT icao FROM airlines WHERE iata=? AND icao!=''",
+                (iata.strip().upper(),)).fetchall()
+        except sqlite3.Error as exc:
+            log.warning("standing-data query failed: %s", exc)
+            return None
+        return rows[0]["icao"] if len(rows) == 1 else None
 
     def _airport(self, code: str) -> tuple[str, str | None]:
         """(display code, city/name) for a schema-01 airport code."""

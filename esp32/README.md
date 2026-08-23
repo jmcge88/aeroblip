@@ -18,7 +18,9 @@ CST9220 touch). Shows live data from the flight-info server on the LAN:
 - **Following view** — joins the rotation whenever a flight is followed from
   the web dashboard (no on-device management): status, route, progress bar,
   ETA, and the same embedded world map used for far-away emergencies. Cycles
-  every 15 s if more than one flight is followed.
+  every 15 s if more than one flight is followed - double-tap anywhere on
+  the page to jump to the next one immediately, which holds for 2 minutes
+  before automatic cycling resumes.
 - **Emergency view (squawk 7700)** — the server's global 7700 watch feeds a
   red-alert screen: callsign, airline, route, aircraft, altitude/speed/heading,
   location and distance. A new global 7700 takes over the screen for 2 minutes

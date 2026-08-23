@@ -36,6 +36,11 @@ log = logging.getLogger(__name__)
 CALLSIGN_URL = "https://api.adsb.lol/v2/callsign/{cs}"
 BUDGET = "adsblol"  # shares app.providers.radar's global throttle/penalties
 CALLSIGN_RE = re.compile(r"^[A-Z0-9]{3,8}$")
+# Two letters then digits looks exactly like an IATA flight number (JQ59) -
+# the single most common way to add a follow that can never resolve, since
+# adsb.lol's callsign endpoint only matches the ICAO-prefixed form (JST59)
+# a transponder actually broadcasts. See _normalise_iata_prefix below.
+_IATA_CALLSIGN_RE = re.compile(r"^([A-Z]{2})(\d[0-9A-Z]*)$")
 EXPIRE_S = 24 * 3600
 LOST_AFTER_S = 600       # live -> no_coverage after this long without a fix
 LANDED_REMOVE_S = 1800   # landed follows clean themselves up
@@ -85,8 +90,11 @@ class FollowTracker:
             if self._path.exists():
                 for f in json.loads(self._path.read_text())["follows"]:
                     if CALLSIGN_RE.fullmatch(f.get("callsign", "")):
-                        self._follows[f["callsign"]] = self._new_state(
-                            f["callsign"], f.get("added") or int(time.time()))
+                        # Self-heal a follow saved before _normalise_iata_prefix
+                        # existed - no reason to make someone re-add it.
+                        cs = self._normalise_iata_prefix(f["callsign"])
+                        self._follows[cs] = self._new_state(
+                            cs, f.get("added") or int(time.time()))
         except (OSError, ValueError, KeyError):
             log.exception("follows file unreadable - starting empty")
 
@@ -108,10 +116,25 @@ class FollowTracker:
 
     # ---- REST surface -----------------------------------------------------
 
+    def _normalise_iata_prefix(self, cs: str) -> str:
+        """JQ59 (IATA - what a human typed, copying it off Google/an airport
+        board) never matches anything on adsb.lol; JST59 (ICAO - what the
+        transponder broadcasts) does. Same "pilot entered the IATA form"
+        translation the route lookup already does, reusing the same
+        standing-data airlines table - see standing_data.py's fetch_route.
+        A miss (unknown airline, standing-data not ready yet) just means the
+        callsign is used as typed, same as before this existed."""
+        m = _IATA_CALLSIGN_RE.match(cs)
+        if not m:
+            return cs
+        icao = self._standing.airline_icao_for_iata(m.group(1))
+        return icao + m.group(2) if icao else cs
+
     def add(self, callsign: str) -> dict:
         cs = callsign.strip().upper()
         if not CALLSIGN_RE.fullmatch(cs):
             raise ValueError("callsign must be 3-8 letters/digits")
+        cs = self._normalise_iata_prefix(cs)
         if cs in self._follows:
             return self._follows[cs]
         if len(self._follows) >= config.MAX_FOLLOWS:

@@ -76,7 +76,14 @@ The same aircraft won't re-notify the same rule for 6 hours.
 
 ## Follow a flight
 
-Tap **✈** and enter a callsign *as broadcast* (`QFA12`, not `QF12`). The
+Tap **✈** and enter a callsign *as broadcast* (`QFA12`, not `QF12`) — though
+if you type the IATA flight number as shown on a boarding pass or Google
+Flights (`JQ59`), the server silently corrects it when the airline code is
+unambiguous (`JQ` → Jetstar's `JST`). Some IATA codes cover several
+codeshare/regional operators under one brand (`QF` alone covers six real
+airlines for Qantas/QantasLink) — those are left as typed rather than
+guessed, since a wrong guess would query the wrong airline's callsign
+entirely; enter the ICAO form yourself in that case. The
 server tracks it anywhere in the world via adsb.lol's callsign endpoint —
 follows are polled round-robin, one upstream request per minute total, and
 dead-reckoned between polls. The FOLLOWING page shows a world map with the
