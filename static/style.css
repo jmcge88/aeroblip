@@ -774,6 +774,31 @@ td.board-note {
   font-weight: 700;
   animation: blink 1.6s step-end infinite;
 }
+/* MIL / NOTABLE: dbFlags-marked airframes. Steady (not blinking) - they can
+   sit in the list for a long time. */
+.mil-tag {
+  color: var(--bg);
+  background: #ff5c5c;
+  border-radius: 0.4vh;
+  padding: 0 0.6vw;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+}
+
+/* Monthly wrap-up: header toggle, month nav, and the rain toggle share the
+   stats-map-bar button look; "on" states fill amber. */
+#wrap-btn {
+  background: none; border: 1px solid var(--amber-dim); color: var(--amber);
+  font-family: var(--mono); font-size: 1.6vh; letter-spacing: 0.15em;
+  padding: 0.3vh 1.2vw; border-radius: 0.4vh; cursor: pointer;
+  margin-right: 1vw; align-self: center;
+}
+#wrap-btn.on, .stats-map-bar button.on {
+  background: var(--amber); color: var(--bg);
+}
+.stats-map-bar button:disabled { opacity: 0.35; cursor: default; }
+.wrap-nav { margin: 0 0 2vh; justify-content: center; }
+.wrap-nav span { color: var(--amber); letter-spacing: 0.25em; font-weight: 700; }
 
 .empty-msg.loading { display: flex; align-items: center; gap: 14px; justify-content: center; }
 .spinner {

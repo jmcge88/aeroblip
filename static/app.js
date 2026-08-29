@@ -186,6 +186,22 @@ function locQuery() {
   return s ? `?${s}` : "";
 }
 
+// CARTO's free basemap tiles have started watermarking "API KEY REQUIRED" once
+// a caller's usage crosses whatever threshold CARTO applies that day - an
+// optional CARTO_API_KEY (server .env) clears it. Fetched once at load; every
+// map is created lazily on first use (emergency/follow/stats views), well
+// after this resolves.
+let cartoApiKey = "";
+fetch("/api/config" + locQuery()).then((r) => (r.ok ? r.json() : null)).then((cfg) => {
+  if (cfg && cfg.carto_api_key) cartoApiKey = cfg.carto_api_key;
+}).catch(() => {});
+
+function cartoTileLayer(opts) {
+  const url = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+    + (cartoApiKey ? `?key=${encodeURIComponent(cartoApiKey)}` : "");
+  return L.tileLayer(url, opts);
+}
+
 /* ---------- websocket ---------- */
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -692,10 +708,10 @@ function updateEmergencyMap(a) {
 
   if (!emMap) {
     emMap = L.map("em-map", { zoomControl: false, attributionControl: false });
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-                { maxZoom: 12 }).addTo(emMap);
+    cartoTileLayer({ maxZoom: 12 }).addTo(emMap);
     emPlane = L.marker(pos, { icon: planeDivIcon(a.track) }).addTo(emMap);
     emTrail = L.polyline([], { color: "#ff5c5c", weight: 2, opacity: 0.7 }).addTo(emMap);
+    applyRain(emMap);
   }
   // The container may have been hidden or un-laid-out when the map was
   // created - recheck the real size before fitting, synchronously (rAF
@@ -839,6 +855,8 @@ function renderSpotlight() {
   const spTags = [
     eta != null ? `OVERHEAD IN ${fmtEta(eta)}` : "",
     a.circling ? `<span class="circling-tag">CIRCLING</span>` : "",
+    notableTag(a),
+    a.go_around ? `<span class="circling-tag">GO-AROUND</span>` : "",
     overhead.sun?.golden ? `<span class="golden-tag">☀ GOLDEN LIGHT</span>` : "",
   ].filter(Boolean).join(" ");
   setHTML(els.spotlightView.querySelector(".sp-eta"), spTags);
@@ -852,6 +870,13 @@ function renderSpotlight() {
         + nearby.map(otherCard).join("");
   }
   setHTML(els.spotlightView.querySelector(".sp-others"), othersHtml);
+}
+
+/* MIL / NOTABLE tag for aircraft the aggregator database flags (dbFlags). */
+function notableTag(a) {
+  if (a.military) return `<span class="mil-tag">MIL</span>`;
+  if (a.interesting) return `<span class="mil-tag">NOTABLE</span>`;
+  return "";
 }
 
 /* Compact card for each additional overhead aircraft (text only - no <img>
@@ -923,6 +948,8 @@ function renderRadar() {
     const eta = etaToOverhead(a);
     const etaTag = eta != null ? `<span class="ac-eta">OVERHEAD IN ${fmtEta(eta)}</span>` : "";
     const circlingTag = a.circling ? `<span class="circling-tag">CIRCLING</span>` : "";
+    const milTag = notableTag(a);
+    const gaTag = a.go_around ? `<span class="circling-tag">GO-AROUND</span>` : "";
     const goldenTag = overhead.sun?.golden && (a.overhead || eta != null)
       ? `<span class="golden-tag">☀ GOLDEN</span>` : "";
     const rot = a.track != null ? `transform: rotate(${Math.round(a.track)}deg)` : "";
@@ -940,7 +967,7 @@ function renderRadar() {
         <div class="ac-sub">
           ${airline ? `<span>${airline}</span>` : ""}
           <span>${esc(a.type ?? "")} ${a.registration ? "· " + esc(a.registration) : ""}</span>
-          <span>${alt}</span><span>${spd}</span><span>${dist}</span>${phase}${etaTag}${circlingTag}${goldenTag}
+          <span>${alt}</span><span>${spd}</span><span>${dist}</span>${phase}${etaTag}${circlingTag}${milTag}${gaTag}${goldenTag}
         </div>
         <div class="ac-side">
           ${thumb}
@@ -1077,8 +1104,8 @@ function updateFollowMap(f) {
   const el = document.getElementById("follow-map");
   if (!followMap) {
     followMap = L.map(el, { zoomControl: false, attributionControl: false, worldCopyJump: true });
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-                { maxZoom: 10 }).addTo(followMap);
+    cartoTileLayer({ maxZoom: 10 }).addTo(followMap);
+    applyRain(followMap);
   }
   followMap.invalidateSize(false);
   const a = f.aircraft;
@@ -1112,22 +1139,24 @@ function updateFollowMap(f) {
   }
 }
 
-let prevFollowStatuses = null;
+/* Follow events (landed / diverted / holding / running late) are generated
+   server-side and ride each follow's snapshot; toast/speak each one once.
+   The first snapshot seeds silently - a page reload must not re-announce. */
+const seenFollowEvents = new Set();
+let followEventsSeeded = false;
 function announceFollows(data) {
-  const cur = {};
-  for (const f of data.follows || []) cur[f.callsign] = f.status;
-  if (prevFollowStatuses) {
-    for (const [cs, st] of Object.entries(cur)) {
-      const was = prevFollowStatuses[cs];
-      if (was && was !== st && st === "landed") {
-        const f = data.follows.find((x) => x.callsign === cs);
-        const where = f?.route?.destination_name ? ` in ${f.route.destination_name}` : "";
-        showToast(`${cs} has landed${where}`, "");
-        speak(`${cs} has landed${where}.`);
-      }
+  for (const f of data.follows || []) {
+    for (const ev of f.events || []) {
+      if (!ev.id || seenFollowEvents.has(ev.id)) continue;
+      seenFollowEvents.add(ev.id);
+      if (!followEventsSeeded) continue;
+      const urgent = ["diverted", "descent"].includes(ev.kind);
+      showToast(ev.title, ev.message, urgent ? "squawk" : "");
+      speak(`${ev.title}. ${ev.message || ""}`);
     }
   }
-  prevFollowStatuses = cur;
+  followEventsSeeded = true;
+  if (seenFollowEvents.size > 300) seenFollowEvents.clear();
 }
 
 /* Follow panel: add/remove followed callsigns */
@@ -1308,15 +1337,19 @@ watchEls.btn.onclick = () => {
   if (!watchEls.panel.classList.contains("hidden")) loadWatches();
 };
 
+const WATCH_DETECTORS = ["circling", "squawk", "new_type", "military",
+                         "interesting", "go_around"];
+
 watchEls.field.onchange = () => {
-  const detector = ["circling", "squawk", "new_type"].includes(watchEls.field.value);
+  const detector = WATCH_DETECTORS.includes(watchEls.field.value);
   watchEls.value.classList.toggle("hidden", detector);
   watchEls.valueLabel.classList.toggle("hidden", detector);
 };
 
 function watchRuleLabel(r) {
   const names = { circling: "circling aircraft", squawk: "any emergency squawk",
-                  new_type: "first-ever type" };
+                  new_type: "first-ever type", military: "military aircraft",
+                  interesting: "notable aircraft", go_around: "go-around at the airport" };
   let s = names[r.field] || `${r.field} = ${r.value}`;
   const mods = [];
   if (r.within_nm) mods.push(`≤${r.within_nm} NM`);
@@ -1392,16 +1425,163 @@ let statsPlaying = null; // interval id while replaying
 let statsLastT = 0;
 let statsLabelsOn = false; // keep the active replay markers' labels shown, not just on click
 
+const wrapBtn = document.getElementById("wrap-btn");
+let wrapShowing = false;
+let wrapMonth = null; // Date pinned to the 1st of the month being shown
+
 statsEls.btn.onclick = () => {
   closePanels();
   statsEls.overlay.classList.remove("hidden");
+  wrapShowing = false;
+  wrapBtn.classList.remove("on");
   loadStats();
 };
 statsEls.close.onclick = () => {
   statsEls.overlay.classList.add("hidden");
+  wrapShowing = false;
+  wrapBtn.classList.remove("on");
   stopReplay();
   if (statsMap) { statsMap.remove(); statsMap = null; statsMarkers = {}; }
 };
+
+/* Monthly wrap-up: the spotting log's month-in-review (/api/wrapped). */
+wrapBtn.onclick = () => {
+  wrapShowing = !wrapShowing;
+  wrapBtn.classList.toggle("on", wrapShowing);
+  if (wrapShowing) {
+    wrapMonth = new Date();
+    wrapMonth.setDate(1);
+    loadWrap();
+  } else {
+    loadStats();
+  }
+};
+
+async function loadWrap() {
+  stopReplay();
+  if (statsMap) { statsMap.remove(); statsMap = null; statsMarkers = {}; }
+  statsEls.body.innerHTML =
+    '<div class="empty-msg loading"><span class="spinner"></span>LOADING…</div>';
+  const q = locQuery();
+  const m = `${wrapMonth.getFullYear()}-${String(wrapMonth.getMonth() + 1).padStart(2, "0")}`;
+  try {
+    const r = await fetch(`/api/wrapped${q ? q + "&" : "?"}month=${m}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    renderWrap(await r.json());
+  } catch (e) {
+    statsEls.body.innerHTML =
+      `<div class="empty-msg">NO WRAP-UP (${esc(e.message)})</div>`;
+  }
+}
+
+function wrapMonthLabel(w) {
+  const [y, m] = w.month.split("-").map(Number);
+  return new Date(y, m - 1, 1)
+    .toLocaleDateString([], { month: "long", year: "numeric" }).toUpperCase();
+}
+
+function dailyChart(daily) {
+  const max = Math.max(...daily, 1);
+  return daily.map((c, i) => {
+    const pct = c ? Math.max(4, (c / max) * 100) : 1.5;
+    const cls = c === 0 ? " zero" : c === max ? " max" : "";
+    return `<div class="hr-col" title="${i + 1} – ${c}">
+      <div class="hr-area"><div class="hr-bar${cls}" style="height:${pct.toFixed(1)}%"></div></div>
+      <div class="hr-lbl">${(i + 1) % 5 === 0 || i === 0 ? i + 1 : ""}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderWrap(w) {
+  statsEls.cell.textContent = wrapMonthLabel(w);
+  const pct = w.prev_flyovers
+    ? Math.round((w.flyovers - w.prev_flyovers) / w.prev_flyovers * 100) : null;
+  const tiles = [
+    ["FLYOVERS", w.flyovers, ""],
+    ["VS LAST MONTH", pct == null ? "–" : `${pct >= 0 ? "+" : ""}${pct}%`, ""],
+    ["AIRCRAFT", w.unique_aircraft, ""],
+    ["BUSIEST DAY", w.busiest_day ?? "–", ""],
+    ["BUSIEST HOUR", w.busiest_hour ?? "–", ""],
+    ["NEW AIRFRAMES", w.new_airframes, "alltime"],
+    ["FIRST-EVER TYPES", w.new_types.length, "alltime"],
+  ].map(([l, v, cls]) =>
+    `<div class="stats-tile ${cls}"><label>${l}</label><span>${esc(v ?? "–")}</span></div>`).join("");
+
+  const cols = [
+    ["FIRST-EVER TYPES", w.new_types.map((r) =>
+      liRow(esc(r.type), esc(r.description || ""), fmtDay(r.f)))],
+    ["RAREST CATCH", w.rarest_catch.map((r) =>
+      liRow(esc(r.type), esc(r.description || ""), `${r.c}× ever`))],
+    ["TOP TYPES", w.top_types.map((r) =>
+      liRow(esc(r.type), esc(r.description || ""), r.c))],
+    ["TOP AIRLINES", w.top_airlines.map((r) =>
+      liRow(esc(r.airline), esc(r.airline_iata || ""), r.c))],
+    ["TOP ROUTES", w.top_routes.map((r) =>
+      liRow(`${esc(r.origin)} → ${esc(r.destination)}`, "", r.c))],
+  ].map(([hdr, lis]) =>
+    `<div><div class="stats-section-hdr">${hdr}</div><ul class="stats-list">${lis.join("") || EMPTY_LI}</ul></div>`).join("");
+
+  const now = new Date();
+  const atCurrent = wrapMonth.getFullYear() === now.getFullYear()
+    && wrapMonth.getMonth() === now.getMonth();
+  statsEls.body.innerHTML = `
+    <div class="stats-map-bar wrap-nav">
+      <button id="wrap-prev" type="button">‹ PREV</button>
+      <span>${esc(wrapMonthLabel(w))}</span>
+      <button id="wrap-next" type="button" ${atCurrent ? "disabled" : ""}>NEXT ›</button>
+    </div>
+    <div class="stats-tiles">${tiles}</div>
+    <div class="stats-section-hdr">FLYOVERS BY DAY</div>
+    <div id="stats-hourly">${dailyChart(w.daily)}</div>
+    <div class="stats-cols">${cols}</div>`;
+  document.getElementById("wrap-prev").onclick = () => {
+    wrapMonth.setMonth(wrapMonth.getMonth() - 1);
+    loadWrap();
+  };
+  document.getElementById("wrap-next").onclick = () => {
+    wrapMonth.setMonth(wrapMonth.getMonth() + 1);
+    loadWrap();
+  };
+}
+
+/* Rain radar overlay (RainViewer's free tile API - the latest observed
+   frame, no key needed). One persisted toggle covers every Leaflet map:
+   stats/replay, follow and emergency. The spotlight's mini radar is a
+   vector scope, so rain doesn't apply there. */
+let rainOn = localStorage.getItem("rainOn") === "1";
+let rainPath = null;
+let rainPathAt = 0;
+
+async function rainTilePath() {
+  if (rainPath && Date.now() - rainPathAt < 600_000) return rainPath;
+  const r = await fetch("https://api.rainviewer.com/public/weather-maps.json");
+  const j = await r.json();
+  const past = j?.radar?.past || [];
+  rainPath = past.length ? past[past.length - 1].path : null;
+  rainPathAt = Date.now();
+  return rainPath;
+}
+
+async function applyRain(map) {
+  if (!map || typeof L === "undefined") return;
+  if (map.__rain) { map.removeLayer(map.__rain); map.__rain = null; }
+  if (!rainOn) return;
+  try {
+    const p = await rainTilePath();
+    if (!p || !rainOn || map.__rain) return;
+    map.__rain = L.tileLayer(
+      `https://tilecache.rainviewer.com${p}/256/{z}/{x}/{y}/2/1_1.png`,
+      { opacity: 0.55, maxZoom: 12 }).addTo(map);
+  } catch { /* no rain data right now - leave the map alone */ }
+}
+
+function setRain(on) {
+  rainOn = on;
+  localStorage.setItem("rainOn", on ? "1" : "0");
+  const b = document.getElementById("rain-btn");
+  if (b) b.classList.toggle("on", on);
+  for (const m of [statsMap, emMap, followMap]) applyRain(m);
+}
 
 async function loadStats() {
   statsEls.body.innerHTML =
@@ -1489,10 +1669,13 @@ function renderStats(s, tracks) {
       <button id="replay-btn" type="button">▶ REPLAY</button>
       <input id="replay-slider" type="range">
       <span id="replay-time">NOW</span>
+      <button id="rain-btn" type="button" class="${rainOn ? "on" : ""}"
+        title="Rain radar overlay — © RainViewer">🌧 RAIN</button>
     </div>
     <div class="stats-note">Dots: amber below 10,000 ft, green above. Click any dot for its callsign, altitude and
       route. The larger dots are live at the slider's current time - tick the box above to keep their labels on
-      screen as you drag the slider or press replay, instead of one at a time.</div>`;
+      screen as you drag the slider or press replay, instead of one at a time. Rain overlay © RainViewer.</div>`;
+  document.getElementById("rain-btn").onclick = () => setRain(!rainOn);
   initStatsMap(tracks);
 }
 
@@ -1529,15 +1712,14 @@ function initStatsMap(tracks) {
   if (!el || typeof L === "undefined") return;
   if (statsMap) { statsMap.remove(); statsMarkers = {}; }
   statsMap = L.map(el, { attributionControl: false });
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-              { maxZoom: 12 }).addTo(statsMap);
+  cartoTileLayer({ maxZoom: 12 }).addTo(statsMap);
   const toggle = document.getElementById("tracks-labels-toggle");
   if (toggle) {
     toggle.checked = statsLabelsOn;
     toggle.onchange = () => { statsLabelsOn = toggle.checked; applyTrackLabelsToggle(); };
   }
   const pts = tracks.points || [];
-  if (!pts.length) { statsMap.setView([-27.4, 153.1], 8); return; }
+  if (!pts.length) { statsMap.setView([-27.4, 153.1], 8); applyRain(statsMap); return; }
   // Heatmap layer: the full 24 h trail, capped so old tablets keep up. Click
   // one for its details - the always-on labels toggle only applies to the
   // live replay markers below (drawReplay), not this whole trail at once.
@@ -1555,6 +1737,7 @@ function initStatsMap(tracks) {
                                   { className: "track-popup", closeButton: false });
   }
   statsMap.fitBounds(L.latLngBounds(bounds).pad(0.05));
+  applyRain(statsMap);
   // Replay index: per-aircraft sample lists in time order, carrying enough
   // of each sample (alt/callsign/route) to label the live marker below.
   statsIndex = {};

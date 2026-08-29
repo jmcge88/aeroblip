@@ -23,6 +23,7 @@ integration and serves the airport board alone.
 | **Follow-a-flight** (per-callsign global query) | adsb.lol callsign endpoint | same | ODbL (shared throttle budget with positions) | Free |
 | **Watch notifications** (phone push) | user-configured ntfy topic / webhook | same | User's own service | Free (ntfy.sh) |
 | **Airline logos** | logostream.dev (`LOGO_URL_TEMPLATE`), 30-day server cache | images.kiwi.com | logostream free tier (terms unconfirmed, see below) | Free tier |
+| **Rain radar overlay** (map tiles) | RainViewer public API | same | Free public tile API; attribution shown next to the toggle. Browser-fetched, only while toggled on — the server never proxies it | Free, no key |
 
 ### How the metadata path works (product mode)
 

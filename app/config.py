@@ -65,6 +65,15 @@ LOGO_URL_TEMPLATE = os.getenv("LOGO_URL_TEMPLATE", _DEFAULT_LOGO_TEMPLATE)
 LOGO_API_KEY = os.getenv("LOGO_API_KEY", "")
 LOGO_API_KEY_HEADER = os.getenv("LOGO_API_KEY_HEADER", "X-API-Key")
 
+# Free CARTO basemap tiles (dark map background on the emergency/follow/stats
+# views) - fetched straight from the browser, not proxied through this
+# server. Without a key CARTO's anonymous tier eventually watermarks tiles
+# with "API KEY REQUIRED"; a free key from https://carto.com/basemaps/apikey/
+# clears it. Handed to clients as a plain field on /api/config, same as any
+# other public tile/map key - it's visible in the browser network tab either
+# way, so there's nothing to gain by hiding it server-side.
+CARTO_API_KEY = os.getenv("CARTO_API_KEY", "")
+
 # Space-separated origins allowed to iframe the dashboard (e.g.
 # "http://homeassistant.local:8123 http://192.168.1.54:8123"); empty (default)
 # keeps embedding blocked.

@@ -263,6 +263,94 @@ class Sightings:
         conn.close()
         return {"cell": cell, "today": today, "alltime": alltime}
 
+    def get_meta(self, key: str) -> str | None:
+        row = self._conn.execute("SELECT value FROM meta WHERE key=?",
+                                 (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
+        self._conn.commit()
+
+    @staticmethod
+    def _month_bounds(year: int, month: int) -> tuple[int, int]:
+        """(start, end) unix timestamps of a calendar month in local time."""
+        start = datetime(year, month, 1)
+        end = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
+        return int(start.timestamp()), int(end.timestamp())
+
+    def wrapped(self, cell: str, year: int, month: int) -> dict:
+        """The monthly wrap-up: one month of spotting, summarized. Everything
+        comes from the flyovers and seen tables, so it works for any month
+        the log covers - not just the current one."""
+        start, end = self._month_bounds(year, month)
+        p_year, p_month = (year - 1, 12) if month == 1 else (year, month - 1)
+        p_start, p_end = self._month_bounds(p_year, p_month)
+        conn = self._reader()
+        q = conn.execute
+
+        def toplist(sql, *params, limit=5):
+            return [dict(r) for r in q(sql + f" LIMIT {limit}", params)]
+
+        def count(sql, *params) -> int:
+            return q(sql, params).fetchone()["c"]
+
+        days = (datetime.fromtimestamp(end) - datetime.fromtimestamp(start)).days
+        daily = [0] * days
+        for row in q("SELECT CAST(strftime('%d', ts, 'unixepoch', 'localtime') AS INT) d,"
+                     " COUNT(*) c FROM flyovers WHERE cell=? AND ts>=? AND ts<?"
+                     " GROUP BY d", (cell, start, end)):
+            if 1 <= row["d"] <= days:
+                daily[row["d"] - 1] = row["c"]
+        busiest_day = (daily.index(max(daily)) + 1) if any(daily) else None
+        hourly_row = q(
+            "SELECT CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INT) h,"
+            " COUNT(*) c FROM flyovers WHERE cell=? AND ts>=? AND ts<?"
+            " GROUP BY h ORDER BY c DESC LIMIT 1", (cell, start, end)).fetchone()
+        out = {
+            "month": f"{year:04d}-{month:02d}",
+            "flyovers": count("SELECT COUNT(*) c FROM flyovers"
+                              " WHERE cell=? AND ts>=? AND ts<?", cell, start, end),
+            "prev_flyovers": count("SELECT COUNT(*) c FROM flyovers"
+                                   " WHERE cell=? AND ts>=? AND ts<?",
+                                   cell, p_start, p_end),
+            "unique_aircraft": count("SELECT COUNT(DISTINCT hex) c FROM flyovers"
+                                     " WHERE cell=? AND ts>=? AND ts<?",
+                                     cell, start, end),
+            "new_airframes": count("SELECT COUNT(*) c FROM seen"
+                                   " WHERE cell=? AND first_ts>=? AND first_ts<?",
+                                   cell, start, end),
+            "daily": daily,
+            "busiest_day": busiest_day,
+            "busiest_hour": (f"{hourly_row['h']:02d}:00" if hourly_row else None),
+            "top_types": toplist(
+                "SELECT type, MAX(description) description, COUNT(*) c FROM flyovers"
+                " WHERE cell=? AND ts>=? AND ts<? AND type IS NOT NULL GROUP BY type"
+                " ORDER BY c DESC", cell, start, end),
+            "top_airlines": toplist(
+                "SELECT airline, airline_iata, COUNT(*) c FROM flyovers"
+                " WHERE cell=? AND ts>=? AND ts<? AND airline IS NOT NULL"
+                " GROUP BY airline ORDER BY c DESC", cell, start, end),
+            "top_routes": toplist(
+                "SELECT origin, destination, COUNT(*) c FROM flyovers"
+                " WHERE cell=? AND ts>=? AND ts<? AND origin IS NOT NULL"
+                " GROUP BY origin, destination ORDER BY c DESC", cell, start, end),
+            # Life-list debuts: types whose first-ever sighting fell in the month
+            "new_types": toplist(
+                "SELECT type, MAX(description) description, MIN(first_ts) f FROM seen"
+                " WHERE cell=? AND type IS NOT NULL AND type != '' GROUP BY type"
+                " HAVING f>=? AND f<? ORDER BY f", cell, start, end, limit=8),
+            # Rarest catch: of the types active this month, the ones with the
+            # fewest all-time sightings - the "you were lucky to see this" list
+            "rarest_catch": toplist(
+                "SELECT type, MAX(description) description, SUM(count) c FROM seen"
+                " WHERE cell=? AND type IS NOT NULL AND type != '' GROUP BY type"
+                " HAVING MAX(last_ts)>=? AND MIN(first_ts)<? ORDER BY c ASC",
+                cell, start, end, limit=3),
+        }
+        conn.close()
+        return out
+
     def tracks(self, cell: str, hours: float) -> dict:
         """Recent position samples for the heatmap/replay map, oldest first."""
         since = int(time.time() - hours * 3600)

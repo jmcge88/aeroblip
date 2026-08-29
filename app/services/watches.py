@@ -13,9 +13,10 @@ produces an event that:
 
 Rule fields (see FIELDS): match on callsign prefix, registration, hex, type
 or airline, or on the built-in detectors - "circling" (see poller), "squawk"
-(any 7500/7600/7700 in the area) and "new_type" (first-ever sighting of a
-type, from the spotting log). Modifiers: within_nm, overhead_only,
-golden_only.
+(any 7500/7600/7700 in the area), "new_type" (first-ever sighting of a
+type, from the spotting log), "military" / "interesting" (the aggregator's
+tar1090-style dbFlags), and "go_around" (a missed approach at the board
+airport, see poller). Modifiers: within_nm, overhead_only, golden_only.
 
 Rules are namespaced per caller ("owner" - the device token, or "default"
 for an unauthenticated caller when REQUIRE_DEVICE_TOKEN is off): each owner
@@ -39,11 +40,13 @@ from pathlib import Path
 import httpx
 
 from app import config
+from app.services import notify
 
 log = logging.getLogger(__name__)
 
 FIELDS = ("callsign", "registration", "hex", "type", "airline",
-          "circling", "squawk", "new_type")
+          "circling", "squawk", "new_type", "military", "interesting",
+          "go_around")
 VALUE_RE = re.compile(r"^[A-Za-z0-9 .\-]{0,32}$")
 MAX_RULES = 50  # per owner, not a fleet-wide total
 DEFAULT_OWNER = "default"
@@ -60,7 +63,8 @@ def _clean(a: dict) -> dict:
             ("hex", "callsign", "registration", "type", "description",
              "altitude_ft", "ground_speed_kt", "distance_nm",
              "bearing_from_home", "heading_cardinal", "phase", "squawk",
-             "circling", "overhead", "route", "airline")}
+             "circling", "military", "interesting", "go_around",
+             "overhead", "route", "airline")}
 
 
 def _describe(a: dict) -> str:
@@ -185,6 +189,15 @@ class WatchManager:
         field, value = rule["field"], rule["value"]
         if field == "circling":
             return bool(a.get("circling"))
+        if field == "military":
+            return bool(a.get("military"))
+        if field == "interesting":
+            # dbFlags "interesting" OR military - the tar1090 database marks
+            # them separately but a watcher asking for "anything notable"
+            # wants both.
+            return bool(a.get("interesting") or a.get("military"))
+        if field == "go_around":
+            return bool(a.get("go_around"))
         if field == "squawk":
             sq = a.get("squawk")
             e = (a.get("emergency") or "").lower()
@@ -206,12 +219,17 @@ class WatchManager:
         return False
 
     def _fire(self, cell: str, rule: dict, a: dict) -> None:
-        label = rule["field"] if rule["field"] in ("circling", "squawk", "new_type") \
+        detectors = ("circling", "squawk", "new_type", "military",
+                     "interesting", "go_around")
+        label = rule["field"] if rule["field"] in detectors \
             else f"{rule['field']}={rule['value']}"
         ident = a.get("callsign") or a.get("registration") or a.get("hex") or "?"
         titles = {"circling": f"{ident} is circling nearby",
                   "squawk": f"{ident} squawking {a.get('squawk') or 'emergency'}",
-                  "new_type": f"First {a.get('type') or '?'} ever seen"}
+                  "new_type": f"First {a.get('type') or '?'} ever seen",
+                  "military": f"Military aircraft: {ident}",
+                  "interesting": f"Notable aircraft: {ident}",
+                  "go_around": f"{ident} went around"}
         title = titles.get(rule["field"], f"Watched flight: {ident}")
         event = {
             "id": secrets.token_urlsafe(6),
@@ -231,22 +249,7 @@ class WatchManager:
         asyncio.get_running_loop().create_task(self._notify(event))
 
     async def _notify(self, event: dict) -> None:
-        if config.NTFY_URL:
-            try:
-                await self._client.post(
-                    config.NTFY_URL, content=event["message"].encode(),
-                    headers={"Title": event["title"],
-                             "Priority": "high" if event["kind"] == "squawk" else "default",
-                             "Tags": "small_airplane"},
-                    timeout=10)
-            except Exception as exc:
-                log.warning("ntfy push failed: %s", exc)
-        if config.WEBHOOK_URL:
-            try:
-                await self._client.post(
-                    config.WEBHOOK_URL,
-                    json={"title": event["title"], "message": event["message"],
-                          "event": event},
-                    timeout=10)
-            except Exception as exc:
-                log.warning("webhook push failed: %s", exc)
+        await notify.push(
+            self._client, event["title"], event["message"],
+            priority="high" if event["kind"] == "squawk" else "default",
+            event=event)

@@ -99,6 +99,7 @@
     <div class="stats-head">
       <span class="stats-title">SPOTTING LOG</span>
       <span id="stats-cell"></span>
+      <button id="wrap-btn" type="button" title="Monthly wrap-up">MONTHLY WRAP</button>
       <button id="stats-close">&#10005;</button>
     </div>
     <div id="stats-body"><div class="empty-msg loading"><span class="spinner"></span>LOADING…</div></div>
@@ -131,6 +132,9 @@
       <option value="circling">Circling aircraft</option>
       <option value="squawk">Any emergency squawk</option>
       <option value="new_type">First-ever aircraft type</option>
+      <option value="military">Military aircraft</option>
+      <option value="interesting">Notable aircraft (military, special)</option>
+      <option value="go_around">Go-around at the airport</option>
     </select>
     <label for="watch-value" id="watch-value-label">Value</label>
     <input id="watch-value" placeholder="A388">
@@ -165,6 +169,6 @@
   </div>
 
   <script src="/static/vendor/leaflet.js?v=1.9.4"></script>
-  <script src="/static/app.js?v=38"></script>
+  <script src="/static/app.js?v=39"></script>
 </body>
 </html>

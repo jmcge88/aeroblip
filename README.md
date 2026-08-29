@@ -58,13 +58,25 @@ fake traffic never contaminates a real life list. Disable with
 `SIGHTINGS_ENABLED=false`. Track points are purged after
 `TRACK_RETENTION_HOURS` (default 72); flyovers and the life list are forever.
 
+**MONTHLY WRAP** (button on the stats page, or `/api/wrapped?month=YYYY-MM`)
+is the month-in-review: flyovers vs the month before, daily histogram,
+busiest day/hour, first-ever types, rarest catch and the month's top
+types/airlines/routes — browsable back through any month the log covers.
+With `NTFY_URL` (or `WEBHOOK_URL`) set, the server also pushes last month's
+wrap-up as a digest on the 1st of each month (from 09:00 local, sent once).
+
 ## Watch list & phone notifications (no Home Assistant needed)
 
 Tap **◉** to manage server-side watch rules: aircraft type, airline, callsign
 prefix, registration or hex — or the built-in detectors: **circling
 aircraft** (orbiting helicopters, holding stacks), **any emergency squawk**,
-or **first-ever aircraft type** (from the spotting log). Modifiers: within
-N NM, overhead only, golden light only. Matches:
+**first-ever aircraft type** (from the spotting log), **military** /
+**notable aircraft** (the aggregators' tar1090-style `dbFlags` — these also
+get a red MIL/NOTABLE tag wherever they appear), or a **go-around at the
+airport** (an aircraft established on approach to the board airport that
+suddenly climbs away — detected from altitude/vertical-rate history against
+the airport's standing-data coordinates). Modifiers: within N NM, overhead
+only, golden light only. Matches:
 
 - toast on every connected dashboard (and are spoken when voice is on);
 - push to your phone via [ntfy](https://ntfy.sh) — set
@@ -103,6 +115,15 @@ go and ETA. Landings are detected and announced; oceanic coverage gaps
 honestly show "NO COVERAGE" with the last known position. Follows expire
 after 24 h and are capped by `MAX_FOLLOWS` **per token**, not fleet-wide.
 
+Follows also raise **alerts**, toasted/spoken on dashboards and pushed via
+the same ntfy/webhook channels as watch matches: **landed** (with a
+"landed away from destination" variant when touchdown is 80+ NM out —
+a diversion), **holding** (the flight is flying circles — same turn-integral
+detection as the circling detector, on the follow's own samples),
+**descending far from destination** (low and descending 150+ NM short — the
+classic diversion signature), and **running late** (the live ETA has drifted
+45+ min past the first estimate).
+
 ## "What's that plane?" (phone)
 
 Hear a jet, grab your phone: `http://<server>:8000/whatsthat` shows a compass
@@ -122,6 +143,11 @@ saved dashboard location and a north-up arrow.
 - **ISS passes** — CelesTrak orbital elements propagated locally (sgp4);
   `/api/sky` lists the next 48 h of passes with naked-eye-visible ones
   flagged.
+- **Rain radar overlay** — the 🌧 RAIN toggle on the stats map adds
+  [RainViewer](https://www.rainviewer.com)'s latest observed radar frame to
+  every map view (stats/replay, follow, emergency); the setting is remembered
+  per device. Fetched by the browser, keyless, and it explains at a glance
+  why the sky went quiet.
 - **Local receiver** — parked design for polling your own readsb/dump1090 at
   1 s intervals: [docs/LOCAL-RECEIVER.md](docs/LOCAL-RECEIVER.md).
 
@@ -146,6 +172,8 @@ Data sources:
   METAR/TAF (US Government work, public domain), cached 10 min per station.
 - **ISS elements** — [CelesTrak](https://celestrak.org) GP data, cached and
   refreshed twice daily; pass geometry computed locally.
+- **Rain radar** — [RainViewer](https://www.rainviewer.com) public tile API,
+  fetched directly by the browser only while the overlay is toggled on.
 
 ## Run
 
@@ -223,6 +251,7 @@ Each distinct location costs one upstream poll loop (see `MAX_LOCATIONS`).
 | `/api/alerts` | current global squawk-7700 aircraft (accepts `lat`/`lon`) |
 | `/api/config` | server default config + data attribution |
 | `/api/stats` | spotting-log statistics (accepts location params) |
+| `/api/wrapped` | monthly wrap-up (`month=YYYY-MM`, default current month) |
 | `/api/history/tracks` | recent track points for the stats map (`hours=`) |
 | `/api/watches` | watch rules + recent matches (GET/POST/DELETE) |
 | `/api/follow` | followed flights (GET/POST/DELETE) |
@@ -283,6 +312,7 @@ All via `.env` — see [.env.example](.env.example). Key settings:
 | `REQUIRE_DEVICE_TOKEN` | `false` | gate data endpoints on provisioned device tokens |
 | `ADMIN_TOKEN` | *(empty = admin disabled)* | protects `/admin` + device registration |
 | `LOGO_URL_TEMPLATE` / `LOGO_API_KEY` | kiwi (personal) / logostream (product) | upstream for the cached `/api/logo/{iata}` |
+| `CARTO_API_KEY` | *(empty = watermarked once CARTO's free tier is exhausted)* | dark map tiles on the emergency/follow/stats views - free key at [carto.com/basemaps/apikey](https://carto.com/basemaps/apikey/) |
 | `FRAME_ANCESTORS` | *(empty = embedding blocked)* | space-separated origins allowed to iframe the dashboard, e.g. a Home Assistant dashboard - sent as `Content-Security-Policy: frame-ancestors`, superseding `X-Frame-Options: DENY` |
 
 ## API
@@ -301,6 +331,7 @@ distinct location gets its own poll loop (idle ones are reaped). With
 - `GET /api/alerts` — aircraft squawking 7700 worldwide (distances from `lat`/`lon`)
 - `GET /api/config` — server default radii/airport + ODbL data attribution
 - `GET /api/stats` — spotting-log stats for the location's grid cell
+- `GET /api/wrapped` — monthly spotting wrap-up (`month=YYYY-MM`)
 - `GET /api/history/tracks` — recent track points (`hours=`, capped at retention)
 - `GET/POST /api/watches`, `DELETE /api/watches/{id}` — watch rules + recent matches
 - `GET/POST /api/follow`, `DELETE /api/follow/{callsign}` — followed flights

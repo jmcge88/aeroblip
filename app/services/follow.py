@@ -30,6 +30,7 @@ import json
 import logging
 import math
 import re
+import secrets
 import time
 from pathlib import Path
 
@@ -37,6 +38,7 @@ import httpx
 
 from app import config
 from app.providers import radar
+from app.services import notify
 from app.services.poller import bearing_deg, cardinal, dead_reckon, haversine_nm
 
 log = logging.getLogger(__name__)
@@ -54,6 +56,22 @@ EXPIRE_S = 24 * 3600
 LOST_AFTER_S = 600       # live -> no_coverage after this long without a fix
 LANDED_REMOVE_S = 1800   # landed follows clean themselves up
 EXTRAP_MAX_S = 150.0     # round-robin polls are slow; reckon a bit further
+
+# Follow alerts: the things worth interrupting someone's day for. Holding
+# reuses the poller's circling idea on the follow's own (60 s) samples: a
+# standard racetrack turns ~360deg every 4 min, so 450deg inside the window is
+# unambiguous. ETA drift compares against the FIRST estimate ever made for
+# the flight and re-alerts per further full increment, not per wobble.
+HOLD_WINDOW_S = 900.0
+HOLD_MIN_TURN_DEG = 450.0
+HOLD_MIN_SAMPLES = 6
+HOLD_REALERT_S = 1800
+ETA_DRIFT_S = 45 * 60           # "running late" threshold and re-alert step
+DIVERT_ALT_FT = 12000           # descending below this ...
+DIVERT_FPM = -400               # ... at at least this rate ...
+DIVERT_MIN_DIST_NM = 150.0      # ... this far from the destination
+LANDED_AWAY_NM = 80.0           # touchdown further out than this = diverted
+MAX_EVENTS = 6                  # kept per follow, embedded in snapshots
 
 # Demo follow: a fabricated flight two-thirds of the way Singapore -> Brisbane
 DEMO_ORIGIN = ("SIN", "Singapore", 1.359, 103.989)
@@ -115,10 +133,11 @@ class FollowTracker:
 
     @staticmethod
     def _new_state(cs: str, added: int) -> dict:
+        # Keys starting with "_" are working state, stripped from snapshots.
         return {"callsign": cs, "added": added, "status": "waiting",
                 "aircraft": None, "route": None, "progress_pct": None,
                 "eta_s": None, "eta_utc": None, "dist_to_dest_nm": None,
-                "last_seen": None}
+                "last_seen": None, "holding": False, "events": []}
 
     def _save(self) -> None:
         try:
@@ -179,7 +198,7 @@ class FollowTracker:
         now = time.time()
         out = []
         for f in self._follows.get(owner, {}).values():
-            f = dict(f)
+            f = {k: v for k, v in f.items() if not k.startswith("_")}
             a = f.get("aircraft")
             if a and f.get("last_seen") and f["status"] == "live":
                 age = now - f["last_seen"]
@@ -279,9 +298,81 @@ class FollowTracker:
             if f["status"] != "landed":
                 f["status"] = "landed"
                 f["landed_at"] = now
+                self._landed_event(f)
         else:
             f["status"] = "live"
+            self._check_alerts(f, a, now)
         self.updated = now
+
+    def _event(self, f: dict, kind: str, title: str, message: str,
+               priority: str = "default") -> None:
+        """Record a follow event (rides the follow snapshot to dashboards for
+        toasts/voice) and push it to the phone. Fire-and-forget, same as watch
+        matches - a slow push service must never stall the poll loop."""
+        ev = {"id": secrets.token_urlsafe(6), "ts": int(time.time()),
+              "kind": kind, "callsign": f["callsign"],
+              "title": title, "message": message}
+        f.setdefault("events", []).append(ev)
+        del f["events"][:-MAX_EVENTS]
+        log.info("follow event [%s]: %s - %s", kind, title, message)
+        asyncio.get_running_loop().create_task(
+            notify.push(self._client, title, message, priority=priority, event=ev))
+
+    def _landed_event(self, f: dict) -> None:
+        cs = f["callsign"]
+        r = f.get("route") or {}
+        dest = r.get("destination_name") or r.get("destination")
+        dist = f.get("dist_to_dest_nm")
+        if dist is not None and dist > LANDED_AWAY_NM:
+            self._event(f, "diverted", f"{cs} landed away from destination",
+                        f"On the ground {dist:.0f} NM from "
+                        f"{dest or 'its destination'}.", priority="high")
+        else:
+            self._event(f, "landed",
+                        f"{cs} has landed" + (f" in {dest}" if dest else ""),
+                        "Touchdown detected.")
+
+    def _check_alerts(self, f: dict, a: dict, now: int) -> None:
+        """In-flight alerts: holding patterns, a descent nowhere near the
+        destination (the classic diversion signature), and ETA drift."""
+        cs = f["callsign"]
+        r = f.get("route") or {}
+        dest = r.get("destination_name") or r.get("destination")
+        dist = f.get("dist_to_dest_nm")
+        track = a.get("track")
+        if track is not None:
+            hist = f.setdefault("_hdg", [])
+            hist.append((now, track))
+            while hist and now - hist[0][0] > HOLD_WINDOW_S:
+                hist.pop(0)
+            turn = sum(((t1 - t0 + 540) % 360) - 180
+                       for (_, t0), (_, t1) in zip(hist, hist[1:]))
+            f["holding"] = (len(hist) >= HOLD_MIN_SAMPLES
+                            and abs(turn) >= HOLD_MIN_TURN_DEG)
+            if f["holding"] and now - f.get("_hold_alerted", 0) > HOLD_REALERT_S:
+                f["_hold_alerted"] = now
+                where = (f" {dist:.0f} NM from {dest}"
+                         if dist is not None and dest else "")
+                self._event(f, "holding", f"{cs} is holding",
+                            f"Flying circles{where} - expect a delay.")
+        alt, vr = a.get("altitude_ft"), a.get("vertical_rate_fpm")
+        if (not f.get("_descent_alerted") and alt is not None and vr is not None
+                and dist is not None and alt < DIVERT_ALT_FT
+                and vr < DIVERT_FPM and dist > DIVERT_MIN_DIST_NM):
+            f["_descent_alerted"] = True
+            self._event(f, "descent", f"{cs} descending far from destination",
+                        f"Down to {round(alt):,} ft, {dist:.0f} NM short of "
+                        f"{dest or 'its destination'} - possible diversion.",
+                        priority="high")
+        if f.get("eta_utc"):
+            if f.get("_eta0") is None:
+                f["_eta0"] = f["eta_utc"]
+            drift = f["eta_utc"] - f["_eta0"]
+            if drift - f.get("_eta_alerted", 0) >= ETA_DRIFT_S:
+                f["_eta_alerted"] = drift
+                self._event(f, "late", f"{cs} is running late",
+                            f"Now expected ~{round(drift / 60)} min later "
+                            f"than first estimated.")
 
     async def _try_next_candidate(self, owner: str, cs: str, f: dict) -> bool:
         """The literal callsign found nothing, and its IATA prefix covers

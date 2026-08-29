@@ -49,11 +49,13 @@ def cell_key(lat: float, lon: float) -> str:
 
 
 class LocationHub:
-    def __init__(self, client: httpx.AsyncClient, meta, sightings=None, watches=None):
+    def __init__(self, client: httpx.AsyncClient, meta, sightings=None, watches=None,
+                 standing=None):
         self._client = client
         self._meta = meta
         self._sightings = sightings
         self._watches = watches
+        self._standing = standing  # StandingDataMeta; airport coords for go-arounds
         self._pollers: dict[tuple, dict] = {}
         self._boards: dict[str, dict] = {}
 
@@ -103,11 +105,19 @@ class LocationHub:
             if len(self._pollers) >= config.MAX_LOCATIONS and not self._evict_idle_poller():
                 raise TooManyLocations()
             board = self.board_for(airport) if airport else None
+            apt = None
+            if airport and self._standing is not None:
+                try:
+                    apt = self._standing.airport_lookup(airport)
+                except Exception:
+                    log.exception("airport lookup failed for %s", airport)
             poller = OverheadPoller(
                 self._make_radar(), self._meta, board_cache=board,
                 lat=cell_lat * GRID_DEG, lon=cell_lon * GRID_DEG,
                 overhead_nm=overhead_nm, area_nm=area_nm,
                 airport_iata=airport,
+                airport_lat=(apt or {}).get("lat"),
+                airport_lon=(apt or {}).get("lon"),
                 sightings=self._sightings, watches=self._watches,
                 cell=f"{cell_lat},{cell_lon}")
             entry = {"poller": poller, "board": airport,

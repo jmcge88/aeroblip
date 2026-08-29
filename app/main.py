@@ -9,6 +9,7 @@ import re
 import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -26,6 +27,7 @@ from app.services.follow import FollowTracker, TooManyFollows
 from app.services.hub import LocationHub, TooManyLocations, cell_key
 from app.services.iss import IssTracker
 from app.services.meta_cache import CachedMeta
+from app.services import notify
 from app.services.sightings import Sightings
 from app.services.sun import light_info
 from app.services.watches import WatchManager
@@ -100,7 +102,8 @@ async def lifespan(app: FastAPI):
             db_name = "sightings_demo.db" if config.DEMO_MODE else "sightings.db"
             sightings = Sightings(Path(config.DATA_DIR) / db_name,
                                   config.TRACK_RETENTION_HOURS)
-        hub = LocationHub(client, meta, sightings=sightings, watches=watches)
+        hub = LocationHub(client, meta, sightings=sightings, watches=watches,
+                          standing=standing)
         alerts = GlobalAlerts(client, meta=meta, product=config.PRODUCT_MODE)
         if config.DEMO_MODE:
             log.warning("DEMO_MODE enabled - overhead traffic and board data are fabricated")
@@ -115,6 +118,7 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(follow.run()))
         if sightings is not None:
             tasks.append(asyncio.create_task(sightings.run()))
+            tasks.append(asyncio.create_task(monthly_digest()))
         try:
             yield
         finally:
@@ -267,6 +271,71 @@ async def stats_endpoint(request: Request):
     return await asyncio.to_thread(sightings.stats, cell_key(lat, lon))
 
 
+@app.get("/api/wrapped", dependencies=[Depends(require_device)])
+async def wrapped_endpoint(request: Request):
+    """The monthly spotting wrap-up for a location's grid cell. ?month=YYYY-MM
+    picks a specific month; the default is the current month so far."""
+    if sightings is None:
+        raise HTTPException(status_code=404, detail="sightings disabled")
+    lat, lon, _, _, _ = parse_location(request.query_params)
+    now = datetime.now().astimezone()
+    year, month = now.year, now.month
+    raw = request.query_params.get("month")
+    if raw:
+        m = re.fullmatch(r"(\d{4})-(\d{2})", raw)
+        if not m or not 1 <= int(m.group(2)) <= 12:
+            raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+        year, month = int(m.group(1)), int(m.group(2))
+    return await asyncio.to_thread(sightings.wrapped, cell_key(lat, lon),
+                                   year, month)
+
+
+async def monthly_digest() -> None:
+    """On the 1st of each month, push last month's wrap-up to ntfy/webhook
+    for the server's default location. Checked hourly; sent once (the meta
+    table remembers), from 09:00 local so it doesn't land overnight."""
+    while True:
+        try:
+            await _maybe_send_digest()
+        except Exception:
+            log.exception("monthly digest failed")
+        await asyncio.sleep(3600)
+
+
+async def _maybe_send_digest() -> None:
+    if sightings is None or config.DEMO_MODE \
+            or not (config.NTFY_URL or config.WEBHOOK_URL):
+        return
+    now = datetime.now().astimezone()
+    tag = f"{now.year:04d}-{now.month:02d}"
+    if now.day != 1 or now.hour < 9 or sightings.get_meta("wrapped_sent") == tag:
+        return
+    prev = now.replace(day=1) - timedelta(days=1)
+    cell = cell_key(config.HOME_LAT, config.HOME_LON)
+    w = await asyncio.to_thread(sightings.wrapped, cell, prev.year, prev.month)
+    sightings.set_meta("wrapped_sent", tag)  # an empty month still counts as done
+    if not w["flyovers"]:
+        return
+    bits = [f"{w['flyovers']} flyovers from {w['unique_aircraft']} aircraft"]
+    if w["prev_flyovers"]:
+        pct = round((w["flyovers"] - w["prev_flyovers"]) / w["prev_flyovers"] * 100)
+        bits.append(f"{pct:+d}% on the month before")
+    if w["top_types"]:
+        t = w["top_types"][0]
+        bits.append(f"most seen: {t['description'] or t['type']} ({t['c']}×)")
+    if w["top_airlines"]:
+        bits.append(f"top airline: {w['top_airlines'][0]['airline']}")
+    if w["new_types"]:
+        bits.append(f"{len(w['new_types'])} first-ever type(s), incl. "
+                    f"{w['new_types'][0]['description'] or w['new_types'][0]['type']}")
+    if w["rarest_catch"]:
+        r = w["rarest_catch"][0]
+        bits.append(f"rarest catch: {r['description'] or r['type']}")
+    await notify.push(http_client, f"Your sky in {prev.strftime('%B')}",
+                      " · ".join(bits), tags="calendar", event=w)
+    log.info("monthly digest sent for %s", w["month"])
+
+
 @app.get("/api/history/tracks", dependencies=[Depends(require_device)])
 async def tracks_endpoint(request: Request):
     """Recent position samples for the stats page's heatmap/replay map."""
@@ -392,6 +461,8 @@ async def client_config():
         "poll_seconds": config.POLL_SECONDS,
         # ODbL attribution for the position data - clients must display this
         "data_credit": "Flight data (c) adsb.lol contributors, ODbL",
+        # For the browser's own CARTO basemap tile requests - see config.py
+        "carto_api_key": config.CARTO_API_KEY,
     }
 
 

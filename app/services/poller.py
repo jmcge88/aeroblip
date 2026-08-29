@@ -116,6 +116,21 @@ CIRCLE_MIN_TURN_DEG = 540.0
 CIRCLE_MAX_DRIFT_NM = 8.0
 CIRCLE_MIN_SAMPLES = 5
 
+# Go-around detection: an aircraft that was established on approach (low,
+# descending, close to the board airport) and is suddenly climbing hard while
+# still low and close has broken off the approach. Departures never trip it -
+# they were never descending - and a normal landing just lets the approach
+# state expire. The flag is held up for a couple of polls so watch rules and
+# displays reliably see it.
+GA_APPROACH_ALT_FT = 4000    # was descending below this ...
+GA_APPROACH_DIST_NM = 8.0    # ... within this range of the airport
+GA_APPROACH_FPM = -300
+GA_CLIMB_FPM = 800           # now climbing at least this hard ...
+GA_CLIMB_ALT_FT = 5000       # ... while still below this ...
+GA_CLIMB_DIST_NM = 10.0      # ... and still near the airport
+GA_WINDOW_S = 240.0          # approach evidence must be this fresh
+GA_HOLD_S = 90.0             # keep the flag raised this long once detected
+
 
 def is_airline_callsign(callsign: str) -> bool:
     """True for ICAO airline callsigns: 3 letters then a flight number (QFA551).
@@ -163,6 +178,7 @@ class OverheadPoller:
                  lat: float | None = None, lon: float | None = None,
                  overhead_nm: float | None = None, area_nm: float | None = None,
                  airport_iata: str | None = None, airport_name: str | None = None,
+                 airport_lat: float | None = None, airport_lon: float | None = None,
                  sightings=None, watches=None, cell: str | None = None):
         self._provider = provider
         self._meta = meta  # AdsbdbMeta or StandingDataMeta (routes/airframes/airlines)
@@ -177,6 +193,10 @@ class OverheadPoller:
         self._airport_iata = airport_iata or config.AIRPORT_IATA
         self._airport_name = airport_name or (config.AIRPORT_NAME if airport_iata is None
                                               else airport_iata)
+        # Board airport coordinates (from standing-data, via the hub) enable
+        # the go-around detector; without them it simply never fires.
+        self._airport_lat = airport_lat
+        self._airport_lon = airport_lon
         self.last_used = time.monotonic()  # idle-reaping (see services.hub)
         self._board_index: dict[str, list[dict]] = {}
         self._board_index_key: int | None = None
@@ -191,6 +211,7 @@ class OverheadPoller:
         self._flyovers: list[float] = []  # start times of demo flyovers
         self._listeners: dict[asyncio.Queue, tuple] = {}  # queue -> view params
         self._paths: dict[str, list[tuple]] = {}  # hex -> [(t, track, lat, lon)]
+        self._ga: dict[str, dict] = {}  # hex -> {"approach_ts", "fired_ts"}
 
     def touch(self) -> None:
         self.last_used = time.monotonic()
@@ -322,6 +343,7 @@ class OverheadPoller:
             await self._enrich_info(aircraft)
             provider = self._provider.active
         self._flag_circling(aircraft)
+        self._flag_go_arounds(aircraft)
         aircraft.sort(key=lambda a: a["distance_nm"] if a["distance_nm"] is not None else 999)
         # The spotting log and watch rules see the same enriched aircraft the
         # displays do. Sightings events (flyover / first-ever type) feed the
@@ -370,6 +392,39 @@ class OverheadPoller:
             drift = haversine_nm(hist[0][2], hist[0][3], a["lat"], a["lon"])
             a["circling"] = (abs(turn) >= CIRCLE_MIN_TURN_DEG
                              and drift <= CIRCLE_MAX_DRIFT_NM)
+
+    def _flag_go_arounds(self, aircraft: list[dict]) -> None:
+        """Set a["go_around"] on aircraft that just broke off an approach to
+        the board airport. Needs the airport's coordinates; without them
+        every aircraft simply stays False."""
+        now = time.time()
+        for a in aircraft:
+            a.setdefault("go_around", False)
+        if self._airport_lat is None or self._airport_lon is None:
+            return
+        for a in aircraft:
+            h, alt = a.get("hex"), a.get("altitude_ft")
+            vr = a.get("vertical_rate_fpm")
+            if not h or alt is None or vr is None or a.get("lat") is None:
+                continue
+            dist = haversine_nm(self._airport_lat, self._airport_lon,
+                                a["lat"], a["lon"])
+            st = self._ga.setdefault(h, {"approach_ts": 0.0, "fired_ts": 0.0})
+            if (vr <= GA_APPROACH_FPM and alt < GA_APPROACH_ALT_FT
+                    and dist <= GA_APPROACH_DIST_NM):
+                st["approach_ts"] = now
+            elif (vr >= GA_CLIMB_FPM and alt < GA_CLIMB_ALT_FT
+                  and dist <= GA_CLIMB_DIST_NM and st["approach_ts"]
+                  and now - st["approach_ts"] <= GA_WINDOW_S):
+                st["fired_ts"] = now
+                st["approach_ts"] = 0.0  # one event per broken-off approach
+                log.info("go-around detected: %s at %s",
+                         a.get("callsign") or h, self._airport_iata)
+            a["go_around"] = bool(st["fired_ts"]) and now - st["fired_ts"] <= GA_HOLD_S
+        if len(self._ga) > 2000:
+            cutoff = now - max(GA_WINDOW_S, GA_HOLD_S) * 4
+            self._ga = {h: st for h, st in self._ga.items()
+                        if max(st["approach_ts"], st["fired_ts"]) >= cutoff}
 
     async def poll_now(self) -> None:
         await self._poll_once()
@@ -504,6 +559,10 @@ class OverheadPoller:
         callsign = (ac.get("flight") or "").strip()
         if not re.fullmatch(r"[A-Z0-9]{2,8}", callsign):
             callsign = ""  # transponders sometimes broadcast garbage
+        # tar1090-style database flags carried by the aggregators:
+        # bit 0 = military, bit 1 = "interesting" (notable owner/history).
+        db = ac.get("dbFlags")
+        db = db if isinstance(db, int) else 0
         return {
             "hex": ac.get("hex"),
             "callsign": callsign or None,
@@ -525,6 +584,8 @@ class OverheadPoller:
             "bearing_from_home": ac.get("dir"),
             "squawk": ac.get("squawk"),
             "emergency": ac.get("emergency"),
+            "military": bool(db & 1),
+            "interesting": bool(db & 2),
             "overhead": dist is not None and dist <= self._overhead_nm,
             "route": None,
             "airline": None,
