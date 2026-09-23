@@ -17,8 +17,9 @@ Per-unit flow (device on USB):
 
 Release flow (publish the current product build to the server's OTA dir):
     python tools/flash_product.py --release
-    -> copies esp32/.pio/build/product/firmware.bin to fw/product-<ver>.bin
-       and rewrites fw/manifest.json; deploy the fw/ dir with the server.
+    -> copies esp32/.pio/build/product/firmware.bin to fw/product-s3-<ver>.bin
+       (--env product-c6: fw/product-c6-<ver>.bin) and updates fw/manifest.json;
+       deploy the fw/ dir with the server.
 
 Requires: pyserial (pip install pyserial) for per-unit provisioning.
 """
@@ -123,8 +124,7 @@ def release(env: str = "product") -> None:
     if not src.exists():
         sys.exit(f"{src} missing - build first: python -m platformio run -e {env}")
     FW_DIR.mkdir(exist_ok=True)
-    suffix = "" if variant == "esp32s3" else f"-{variant[5:]}"  # product-c6-<ver>.bin
-    dest = FW_DIR / f"product{suffix}-{version}.bin"
+    dest = FW_DIR / f"product-{variant[5:]}-{version}.bin"  # product-s3-<ver>.bin / product-c6-<ver>.bin
     shutil.copyfile(src, dest)
 
     manifest_path = FW_DIR / "manifest.json"

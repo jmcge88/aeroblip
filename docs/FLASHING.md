@@ -104,7 +104,7 @@ cd esp32; python -m platformio run -e product; cd ..
 python tools\flash_product.py --release
 ```
 
-Copies the build to `fw/product-<version>.bin` and rewrites
+Copies the build to `fw/product-s3-<version>.bin` and rewrites
 `fw/manifest.json`. `fw/` is tracked in git, so deploying a release to prod is
 commit + push + `git pull` on the server (docker-compose mounts `fw/`
 read-only, no container rebuild needed). Devices check `/api/fw/latest` on
@@ -116,7 +116,7 @@ Two boards, one manifest: release each board's build separately —
 
 ```bash
 cd esp32; python -m platformio run -e product; python -m platformio run -e product-c6; cd ..
-python tools\flash_product.py --release                    # -> fw/product-<ver>.bin, top-level + variants.esp32s3
+python tools\flash_product.py --release                    # -> fw/product-s3-<ver>.bin, top-level + variants.esp32s3
 python tools\flash_product.py --release --env product-c6   # -> fw/product-c6-<ver>.bin, variants.esp32c6
 ```
 
