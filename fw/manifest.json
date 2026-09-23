@@ -1,15 +1,15 @@
 {
-  "version": "0.10.5",
-  "file": "product-s3-0.10.5.bin",
+  "version": "0.10.6",
+  "file": "product-s3-0.10.6.bin",
   "variant": "esp32s3",
   "variants": {
     "esp32s3": {
-      "version": "0.10.5",
-      "file": "product-s3-0.10.5.bin"
+      "version": "0.10.6",
+      "file": "product-s3-0.10.6.bin"
     },
     "esp32c6": {
-      "version": "0.10.5",
-      "file": "product-c6-0.10.5.bin"
+      "version": "0.10.6",
+      "file": "product-c6-0.10.6.bin"
     }
   }
 }

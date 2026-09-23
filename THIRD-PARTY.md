@@ -25,7 +25,7 @@ inbound dependencies.
 
 | Library | Licence | Notes |
 |---|---|---|
-| ArduinoWebsockets | **GPL-3.0** | The strongest constraint on this project. Because the firmware links it, the firmware must be GPL-3.0 or AGPL-3.0 — no permissive or source-available licence is possible without replacing it first. |
+| ArduinoWebsockets | **GPL-3.0** | The strongest constraint on this project. Because the firmware links it, the firmware must be GPL-3.0 or AGPL-3.0 — no permissive or source-available licence is possible without replacing it first. Vendored (v0.5.4) in `esp32/lib/ArduinoWebsockets` with a one-file modification to `src/tiny_websockets/message.hpp` that moves frame payloads instead of copying them; the change is marked in that file and the library's LICENSE ships alongside it. |
 | GFX Library for Arduino (Arduino_GFX) | BSD-2-Clause | Derived from Adafruit_GFX, (c) 2012 Adafruit Industries. The published PlatformIO package omits the licence file; the terms are in `license.txt` in the upstream repository. |
 | ArduinoJson | MIT |  |
 | WiFiManager | MIT |  |
