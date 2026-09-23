@@ -199,6 +199,30 @@ def board_or_429(airport: str):
         raise HTTPException(status_code=429, detail="too many active airports")
 
 
+def parse_rows(params) -> int | None:
+    """Optional ?rows=N cap on the board's departures/arrivals lists.
+
+    The displays show 10 rows a side but the full board runs to ~175 rows
+    (~44 KB of JSON per push) - more than the PSRAM-less ESP32-C6 can buffer.
+    Devices ask for what they can show; the web dashboard sends nothing and
+    gets everything."""
+    raw = params.get("rows")
+    if raw is None:
+        return None
+    try:
+        return min(200, max(1, int(raw)))
+    except ValueError:
+        return None
+
+
+def trim_board(snapshot: dict, rows: int | None) -> dict:
+    if rows is None:
+        return snapshot
+    return {**snapshot,
+            "arrivals": snapshot.get("arrivals", [])[:rows],
+            "departures": snapshot.get("departures", [])[:rows]}
+
+
 # ---- device auth ---------------------------------------------------------
 
 async def require_device(request: Request) -> None:
@@ -251,7 +275,7 @@ async def overhead(request: Request):
 @app.get("/api/board", dependencies=[Depends(require_device)])
 async def board_endpoint(request: Request):
     _, _, _, _, airport = parse_location(request.query_params)
-    return board_or_429(airport).snapshot
+    return trim_board(board_or_429(airport).snapshot, parse_rows(request.query_params))
 
 
 @app.get("/api/alerts", dependencies=[Depends(require_device)])
@@ -632,6 +656,7 @@ async def ws(websocket: WebSocket):
         devices.touch(owner)
     location = parse_location(websocket.query_params)
     lat, lon, radius, area, airport = location
+    rows = parse_rows(websocket.query_params)
     try:
         poller = await hub.poller_for(*location)
         board = hub.board_for(airport)
@@ -648,7 +673,7 @@ async def ws(websocket: WebSocket):
     try:
         await websocket.send_json({"type": "overhead",
                                    "data": poller.snapshot_for(lat, lon, radius, area, owner)})
-        await websocket.send_json({"type": "board", "data": board.snapshot})
+        await websocket.send_json({"type": "board", "data": trim_board(board.snapshot, rows)})
         await websocket.send_json({"type": "alerts", "data": alerts.snapshot_for(lat, lon)})
         await websocket.send_json({"type": "follow", "data": follow.snapshot_now(owner)})
         last_board_update = board.snapshot.get("updated")
@@ -661,7 +686,7 @@ async def ws(websocket: WebSocket):
             if board.snapshot.get("updated") != last_board_update:
                 last_board_update = board.snapshot.get("updated")
                 board.touch()
-                await websocket.send_json({"type": "board", "data": board.snapshot})
+                await websocket.send_json({"type": "board", "data": trim_board(board.snapshot, rows)})
             # While an alert is active, resend on every push so its
             # dead-reckoned position animates; otherwise only on poll changes.
             if (alerts.snapshot.get("updated") != last_alerts_update

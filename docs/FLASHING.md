@@ -47,7 +47,13 @@ ES8311 codec; the firmware picks the GPIO map from the chip it's built for
   it — then build with `-DKEY_USER=<n>`.
 - **No speaker-amp enable pin**; the codec drives the speaker directly.
 - Single core: the network task and UI loop share one CPU. Watch the heap
-  figures the boot log prints (`[boot] setup done, heap ...`).
+  figures the boot log prints (`[boot] setup done, heap ...` and
+  `[ws] connected, heap ...`). After TLS the largest free block is ~100 KB;
+  the websocket library needs roughly 2x a frame's size to receive it, so
+  devices ask the server for `rows=10` on the airport board (the full BNE
+  board is ~44 KB and aborted the C6 with `bad_alloc` every connect). A
+  server older than 0.10.5 ignores that parameter - upgrade the server
+  before putting a C6 on it.
 - OTA: the device asks `/api/fw/latest?variant=esp32c6` and the server only
   ever answers with a C6 image (see *Publishing an OTA release*).
 
@@ -181,6 +187,7 @@ DEVINFO again if you need it.
 | "WAITING FOR DATA" forever | `REQUIRE_DEVICE_TOKEN=true` but the device has no registered token (server logs show 403s / ws close 4403) | provision it: `flash_product.py --no-flash ...` |
 | Dashboard stuck "reconnecting…" | same, browser has no token | add `?token=...` to the URL or the `⌖` panel |
 | Splash "FLIGHT INFO / CONNECTING" flashing forever | firmware crash loop (each flash is a reboot) | capture serial at 115200 for the backtrace; on OTA'd units rollback kicks in after 3 crashes |
+| C6 unit: `abort()` right after `[ws] connected`, 3 times, then rollback, then OTA, forever | out of memory receiving a websocket frame - the server is sending the full airport board | upgrade the server to ≥ 0.10.5 so it honours the device's `rows=` cap |
 | Black screen after holding a button at power-on | that was BOOT (GPIO0) — chip is in ROM download mode | unplug, replug without holding anything |
 | USB flash "succeeds" but old firmware still runs | otadata still points at the other OTA slot | `esptool erase_region 0xe000 0x2000` (the flash script does this) |
 | Wrong city pair on a spotlighted flight | stale adsbdb route the board couldn't correct | expected for callsign≠flight-number carriers in dev mode; product mode resolves live |

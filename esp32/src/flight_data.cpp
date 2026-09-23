@@ -85,6 +85,11 @@ void setDeviceLocation(const char *latlon, const char *radius, const char *area,
     else
       s_airport[0] = '\0';
   }
+  // Ask for exactly the board rows we can show. The full BNE board is ~44 KB
+  // of JSON per push, which the PSRAM-less C6 cannot even buffer (the
+  // websocket library aborted on the copy); capped it is a couple of KB.
+  // Older servers ignore the parameter and send everything.
+  append("%srows=%d", o ? "&" : "?", MAX_BOARD_ROWS);
 }
 
 const char *deviceQuery() { return s_query; }

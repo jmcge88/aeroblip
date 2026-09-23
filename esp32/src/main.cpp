@@ -721,9 +721,16 @@ static void connectWiFi() {
 
 /* ---------- network task ---------- */
 
-static void onWsMessage(websockets::WebsocketsMessage msg) {
+// Takes the message by reference: the library moves each frame into the
+// callback, and a by-value parameter here (or its PartialMessageCallback
+// wrapper) would duplicate the whole payload - a 44 KB board frame was enough
+// to throw bad_alloc on the C6.
+static void onWsMessage(const websockets::WebsocketsMessage &msg) {
   if (!msg.isText()) return;
   const auto &raw = msg.rawData();
+  if (raw.size() > 4096) // big frames are what sink a PSRAM-less board: log the headroom
+    Serial.printf("[ws] frame %u bytes, heap %u (largest %u)\n", (unsigned)raw.size(),
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   // static: several KB each, and this callback only ever runs on the net task
   static OverheadData oh;
   static BoardData bd;
@@ -749,7 +756,8 @@ static void onWsEvent(websockets::WebsocketsEvent event, String data) {
   if (event == WebsocketsEvent::ConnectionOpened) {
     g_wsConnected = true;
     g_lastWsFrameMs = millis();
-    Serial.println("[ws] connected");
+    Serial.printf("[ws] connected, heap %u (largest %u)\n", ESP.getFreeHeap(),
+                  ESP.getMaxAllocHeap());
   } else if (event == WebsocketsEvent::ConnectionClosed) {
     if (g_wsConnected) Serial.println("[ws] disconnected");
     g_wsConnected = false;
@@ -857,7 +865,11 @@ static void netTask(void *) {
   xSemaphoreGive(dataLock);
   Serial.printf("[net] config ok: airport=%s area=%.0fnm\n", cfg.airport_iata, cfg.area_radius_nm);
 
-  ws.onMessage(onWsMessage);
+  // Full-signature callback: the library hands the frame over with std::move,
+  // so this is copy-free (the one-argument overload wraps and copies it)
+  ws.onMessage([](websockets::WebsocketsClient &, websockets::WebsocketsMessage msg) {
+    onWsMessage(msg);
+  });
   ws.onEvent(onWsEvent);
   // once, not per-connect: the library appends rather than replaces headers
   if (deviceToken()[0]) ws.addHeader("X-Device-Token", deviceToken());
