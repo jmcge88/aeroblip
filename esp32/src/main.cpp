@@ -38,7 +38,23 @@ static Arduino_DataBus *bus = new Arduino_ESP32QSPI(
     LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3);
 static Arduino_CO5300 *panel = new Arduino_CO5300(
     bus, LCD_RESET, 0 /* rotation */, LCD_WIDTH, LCD_HEIGHT, 0, 0, 0, 0);
+#ifdef NO_FRAMEBUFFER
+// No PSRAM (ESP32-C6): a 480x480x16 canvas is 460 KB and the chip has 328 KB
+// of heap in total, so every screen draws straight to the panel. flush() is
+// the base class no-op; expect a visible repaint instead of a page flip.
+static Arduino_GFX *canvas = panel;
+#else
 static Arduino_Canvas *canvas = new Arduino_Canvas(LCD_WIDTH, LCD_HEIGHT, panel);
+#endif
+
+// KEY_USER is -1 on boards whose side key isn't mapped yet (see pin_config.h)
+static inline bool userKeyDown() {
+#if KEY_USER >= 0
+  return digitalRead(KEY_USER) == LOW;
+#else
+  return false;
+#endif
+}
 
 static TouchDrvCST92xx touch;
 static bool touchOk = false;
@@ -677,8 +693,10 @@ static void connectWiFi() {
 
   // Catch a slightly-late press too: sample the USER key while the
   // "connecting" splash is up instead of only in the first instant of boot
+  // (On boards without a mapped USER key, BOOT does the job here - its
+  // strapping role is over once the chip is running.)
   for (uint32_t t0 = millis(); millis() - t0 < 2000 && !g_forcePortal;) {
-    if (digitalRead(KEY_USER) == LOW) g_forcePortal = true;
+    if (userKeyDown() || digitalRead(KEY_BOOT) == LOW) g_forcePortal = true;
     vTaskDelay(pdMS_TO_TICKS(20));
   }
   if (g_forcePortal) {
@@ -968,6 +986,11 @@ static void mapTouch(int16_t &tx, int16_t &ty) {
 }
 
 static void pollOrientation() {
+#ifdef NO_FRAMEBUFFER
+  // Drawing straight to the panel: rotation would mean rewriting MADCTL
+  // (the driver's rotation table doesn't match this panel) - stay upright.
+  return;
+#endif
   static uint32_t lastCheck = 0;
   static uint8_t candidate = 0, stableCount = 0;
   if (!imuOk || millis() - lastCheck < 300) return;
@@ -1098,7 +1121,7 @@ static void pollTouch() {
 static void pollButtons() {
   static uint32_t lastPress = 0, heldSince = 0;
   static bool userWas = true, bootWas = true;
-  bool user = digitalRead(KEY_USER);
+  bool user = !userKeyDown();
   bool boot = digitalRead(KEY_BOOT);
   uint32_t now = millis();
   // Hold either key 3s to reopen the setup portal (no power-cycle gymnastics;
@@ -1380,22 +1403,40 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("[boot] flight-info AMOLED display");
+  Serial.printf("[boot] board %s (%s) fw %s heap %u\n", BOARD_NAME, FW_VARIANT, FW_VERSION,
+                ESP.getFreeHeap());
   otaBootGuard(); // roll back a crash-looping OTA before touching anything else
 
+#if KEY_USER >= 0
   pinMode(KEY_USER, INPUT_PULLUP);
+#endif
   pinMode(KEY_BOOT, INPUT_PULLUP);
-  g_forcePortal = (digitalRead(KEY_USER) == LOW); // hold USER at power-on to reconfigure
+  g_forcePortal = userKeyDown(); // hold USER at power-on to reconfigure
 
   Wire.begin(IIC_SDA, IIC_SCL);
+
+  // PMU first: on the C6 board the panel/touch/codec rails come from the
+  // AXP2101 and must be up before the panel is initialised
+  powerOk = power.begin(Wire, AXP2101_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
+  if (!powerOk) Serial.println("[boot] AXP2101 not found - battery status unavailable");
+#if CONFIG_IDF_TARGET_ESP32C6
+  if (powerOk) {
+    // Vendor bring-up (Waveshare C6 examples): DC1 + ALDO1-4 at 3.3 V. The
+    // PMU forgets this on a cold start, so it can't be left to the demo fw.
+    power.setDC1Voltage(3300);   power.enableDC1();
+    power.setALDO1Voltage(3300); power.enableALDO1();
+    power.setALDO2Voltage(3300); power.enableALDO2();
+    power.setALDO3Voltage(3300); power.enableALDO3();
+    power.setALDO4Voltage(3300); power.enableALDO4();
+    delay(20);
+  }
+#endif
 
   if (!canvas->begin()) {
     Serial.println("[boot] canvas/panel begin FAILED");
   }
-  bus->writeC8D8(0x36, 0xA0); // panel orientation, per vendor sample
+  bus->writeC8D8(0x36, LCD_MADCTL); // panel orientation, per vendor sample
   panel->setBrightness(BRIGHT_DAY);
-
-  powerOk = power.begin(Wire, AXP2101_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
-  if (!powerOk) Serial.println("[boot] AXP2101 not found - battery status unavailable");
 
   imuOk = imu.begin(Wire, QMI8658_L_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
   if (imuOk) {
@@ -1430,6 +1471,8 @@ void setup() {
 
   dataLock = xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(netTask, "net", 20480, nullptr, 1, nullptr, 0);
+  Serial.printf("[boot] setup done, heap %u (largest block %u)\n", ESP.getFreeHeap(),
+                ESP.getMaxAllocHeap());
 }
 
 void loop() {

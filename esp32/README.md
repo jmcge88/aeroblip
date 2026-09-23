@@ -1,7 +1,10 @@
 # Flight-info AMOLED display
 
 Firmware for the Waveshare **ESP32-S3-Touch-AMOLED-2.16** (480x480 CO5300 AMOLED,
-CST9220 touch). Shows live data from the flight-info server on the LAN:
+CST9220 touch) and its RISC-V sibling, the **ESP32-C6-Touch-AMOLED-2.16**
+(same panel, touch, PMU and codec on different GPIOs; build the `-c6` envs -
+see [docs/FLASHING.md](../docs/FLASHING.md#the-two-boards) for what the
+PSRAM-less C6 leaves out). Shows live data from the flight-info server on the LAN:
 
 - **Overhead / nearby view** — when a flight is inside the overhead ring, a
   fullscreen spotlight on that one aircraft (airline, registration, big callsign,

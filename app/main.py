@@ -578,18 +578,34 @@ async def list_devices():
 # ---- firmware OTA ----------------------------------------------------------
 
 @app.get("/api/fw/latest")
-async def fw_latest():
+async def fw_latest(variant: str = ""):
     """OTA manifest: {"version": "1.0.1", "url": "/fw/product-1.0.1.bin"}.
-    Maintained by tools/flash_product.py --release."""
+    Maintained by tools/flash_product.py --release.
+
+    Multi-board fleets: the manifest may carry per-chip entries under
+    "variants" ({"esp32c6": {"version": ..., "file": ...}}). A device that
+    names its variant gets that entry and nothing else - a missing entry is a
+    404, never another chip's image (the bootloader would refuse it anyway,
+    but only after a full download on every daily check). No variant means
+    the original ESP32-S3 fleet, served from the top-level fields."""
     manifest = Path(config.FW_DIR) / "manifest.json"
     if not manifest.exists():
+        raise HTTPException(status_code=404)
+    if variant and not re.fullmatch(r"[a-z0-9]{1,16}", variant):
         raise HTTPException(status_code=404)
     # A half-written or hand-edited manifest is a missing release, not a 500 -
     # devices poll this on a loop and must not be handed server errors.
     try:
         j = json.loads(manifest.read_text())
-        version, file = j["version"], j["file"]
-    except (OSError, ValueError, KeyError, TypeError):
+        entry = j
+        if variant:
+            entry = (j.get("variants") or {}).get(variant)
+            if entry is None:
+                if variant != j.get("variant", "esp32s3"):
+                    raise HTTPException(status_code=404)
+                entry = j  # the top-level release is this board's
+        version, file = entry["version"], entry["file"]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         log.warning("fw manifest unreadable: %s", manifest, exc_info=True)
         raise HTTPException(status_code=404)
     # Both fields are compared against / fetched by devices on a loop: a junk

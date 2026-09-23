@@ -1,4 +1,5 @@
 #include "ota.h"
+#include "pin_config.h" // FW_VARIANT
 #include "config.h"
 #include "certs.h"
 #include "device_id.h"
@@ -81,7 +82,9 @@ static WiFiClient *clientFor(const String &url, WiFiClient &plain, WiFiClientSec
 }
 
 static bool fetchManifest(String &version, String &url) {
-  String murl = String(serverBaseUrl()) + "/api/fw/latest";
+  // Name our board so a multi-board server never hands us another chip's
+  // image (the bootloader would reject it, but only after a full download)
+  String murl = String(serverBaseUrl()) + "/api/fw/latest?variant=" FW_VARIANT;
   WiFiClient plain;
   WiFiClientSecure secure;
   WiFiClient *client = clientFor(murl, plain, secure);

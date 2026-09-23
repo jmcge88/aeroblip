@@ -11,21 +11,45 @@ on PATH needed).
 pip install platformio pyserial
 ```
 
-Device: Waveshare ESP32-S3-Touch-AMOLED-2.16 on USB (shows up as a COM port,
-usually `COM5`). Opening the serial port auto-resets the board — that's normal.
+Device: Waveshare ESP32-S3-Touch-AMOLED-2.16 or ESP32-C6-Touch-AMOLED-2.16 on
+USB (shows up as a COM port, usually `COM5`; on macOS `/dev/cu.usbmodem*`).
+Opening the serial port auto-resets the board — that's normal.
 
 ## Build environments (esp32/platformio.ini)
 
-| Env | Server baked in | PRODUCT_BUILD | Use for |
+| Env (S3 / C6) | Server baked in | PRODUCT_BUILD | Use for |
 |---|---|---|---|
-| `amoled216` | `http://192.168.1.100:8000` (LAN, example — set your server's IP) | no | personal/dev units |
-| `product` | `https://api.aeroblip.com` (TLS, pinned ISRG Root X1) | yes | retail units |
-| `product-dev` | `http://192.168.1.100:8000` (LAN, example) | yes | testing product behaviour on the bench |
+| `amoled216` / `amoled216-c6` | `http://192.168.1.100:8000` (LAN, example — set your server's IP) | no | personal/dev units |
+| `product` / `product-c6` | `https://api.aeroblip.com` (TLS, pinned ISRG Root X1) | yes | retail units |
+| `product-dev` / `product-dev-c6` | `http://192.168.1.100:8000` (LAN, example) | yes | testing product behaviour on the bench |
 
 `PRODUCT_BUILD` means: photos default OFF, OTA self-update enabled, pinned CA
 for HTTPS. Every build lets the owner override the server URL in the portal.
-Firmware version comes from `-DFW_VERSION` in the `[base]` section — bump it
+Firmware version comes from `fw_version` in the `[common]` section — bump it
 before an OTA release.
+
+### The two boards
+
+Same 480x480 CO5300 AMOLED, CST9220 touch, AXP2101 PMU, QMI8658 IMU and
+ES8311 codec; the firmware picks the GPIO map from the chip it's built for
+(`esp32/src/pin_config.h`). What differs on the **ESP32-C6** board:
+
+- **No PSRAM** (328 KB of heap total), so the `-c6` envs build with
+  `NO_FRAMEBUFFER`: the UI draws straight to the panel instead of through a
+  460 KB canvas. Repaints are visible rather than page-flipped, aircraft
+  photos and airline logos (PSRAM-only buffers) are skipped, and IMU
+  auto-rotation is off (the panel stays upright).
+- **Keys**: BOOT is GPIO9. Holding it at *power-on* enters ROM download mode
+  (that's the chip, not us) — to force the setup portal, hold BOOT once the
+  CONNECTING splash is up instead. The side KEY button's GPIO isn't in any
+  vendor example yet; it's unmapped (`KEY_USER -1`). To find it, open a
+  serial monitor, hold KEY and send `GPIOS` — the spare pin reading `0` is
+  it — then build with `-DKEY_USER=<n>`.
+- **No speaker-amp enable pin**; the codec drives the speaker directly.
+- Single core: the network task and UI loop share one CPU. Watch the heap
+  figures the boot log prints (`[boot] setup done, heap ...`).
+- OTA: the device asks `/api/fw/latest?variant=esp32c6` and the server only
+  ever answers with a C6 image (see *Publishing an OTA release*).
 
 ## Dev flash (bench unit, no provisioning)
 
@@ -49,6 +73,10 @@ python $env:USERPROFILE\.platformio\packages\tool-esptoolpy\esptool.py --chip es
 ```bash
 python tools\flash_product.py --port COM5 --name batch1-003 --server https://api.aeroblip.com --admin-token <ADMIN_TOKEN>
 ```
+
+ESP32-C6 board: add `--env product-c6` (the script derives the esptool chip
+and the release filename from the env name). `--port` defaults to `COM5` on
+Windows and to the first `/dev/cu.usbmodem*` / `/dev/ttyACM*` elsewhere.
 
 What it does, in order:
 
@@ -81,8 +109,22 @@ Copies the build to `fw/product-<version>.bin` and rewrites
 commit + push + `git pull` on the server (docker-compose mounts `fw/`
 read-only, no container rebuild needed). Devices check `/api/fw/latest` on
 boot and daily, and self-update when the version differs from theirs.
-**Bump `FW_VERSION` in platformio.ini first** or devices will see "same
-version" and skip it.
+**Bump `fw_version` in platformio.ini `[common]` first** or devices will see
+"same version" and skip it.
+
+Two boards, one manifest: release each board's build separately —
+
+```bash
+cd esp32; python -m platformio run -e product; python -m platformio run -e product-c6; cd ..
+python tools\flash_product.py --release                    # -> fw/product-<ver>.bin, top-level + variants.esp32s3
+python tools\flash_product.py --release --env product-c6   # -> fw/product-c6-<ver>.bin, variants.esp32c6
+```
+
+The manifest keeps a per-chip entry under `variants`; devices ask
+`/api/fw/latest?variant=<chip>` and get their own entry or a 404 — never the
+other board's image. Pre-variant S3 units (≤ 0.10.3) send no `variant` and
+read the top-level fields, which the S3 release keeps updating. Releasing
+only one board leaves the other's entry untouched.
 
 Safety net: 3 consecutive crash reboots (panics/watchdogs, not power cycles)
 without a minute of stable running flips the device back to the previous
@@ -94,7 +136,8 @@ rollout. Soak every release on the bench unit for a day before `--release`.
 | Command | Reply | Purpose |
 |---|---|---|
 | `PROVISION <token>` | `PROVISIONED <token>` | store the device token in NVS |
-| `DEVINFO` | `DEVINFO fw=... mac=... token=set|unset server=...` | identity check |
+| `DEVINFO` | `DEVINFO fw=... mac=... token=set|unset server=... board=... variant=... heap=...` | identity check |
+| `GPIOS` | `GPIOS 10=1 14=1 18=0` | levels of the unmapped GPIOs (pull-ups on) — find the C6 KEY button |
 | `REBOOT` | `REBOOTING` | restart |
 
 Note: the MAC reads as zeros until WiFi comes up (~2 s after boot) — query

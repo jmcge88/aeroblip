@@ -1,6 +1,63 @@
 #pragma once
+#include <sdkconfig.h> // CONFIG_IDF_TARGET_*
 
-// Waveshare ESP32-S3-Touch-AMOLED-2.16 pin map (from the vendor sample repo)
+// Both supported boards carry the same 2.16" 480x480 CO5300 AMOLED, CST9220
+// touch, AXP2101 PMU, QMI8658 IMU and ES8311 codec - only the MCU and the
+// GPIO map differ. The build picks the map from the chip it targets.
+#define LCD_WIDTH 480
+#define LCD_HEIGHT 480
+
+// Panel orientation written to MADCTL (0x36) after init. Same value on both
+// boards per the vendor samples; override with -DLCD_MADCTL=0x30 if a unit
+// comes up mirrored.
+#ifndef LCD_MADCTL
+#define LCD_MADCTL 0xA0
+#endif
+
+#if CONFIG_IDF_TARGET_ESP32C6
+// ---- Waveshare ESP32-C6-Touch-AMOLED-2.16 -------------------------------
+// Pin map from the vendor repo (02_Example/*/user_config.h and the XiaoZhi
+// board config). Single core, 16MB flash, NO PSRAM (~328 KB heap).
+#define BOARD_NAME "ESP32-C6-Touch-AMOLED-2.16"
+#define FW_VARIANT "esp32c6"
+
+// CO5300 AMOLED, QSPI (shares the bus with the TF slot: SD CS is GPIO6)
+#define LCD_SDIO0 1
+#define LCD_SDIO1 2
+#define LCD_SDIO2 3
+#define LCD_SDIO3 4
+#define LCD_SCLK 0
+#define LCD_RESET -1 // panel reset is not on a GPIO - driver falls back to SWRESET
+#define LCD_CS 15
+
+// CST9220 touch + shared I2C bus (RTC, IMU, codec, AXP2101 PMU)
+#define IIC_SDA 8
+#define IIC_SCL 7
+#define TP_INT 5
+#define TP_RST 11
+
+// Physical keys. BOOT is GPIO9 (strapping pin - input only after boot; holding
+// it at power-on enters ROM download mode, so the "portal at boot" gesture is
+// to hold it once the CONNECTING splash is up). The side KEY button's GPIO is
+// not in any vendor example: build with -DKEY_USER=<n> once known (the serial
+// command GPIOS prints the spare pins' levels to find it).
+#define KEY_BOOT 9
+#ifndef KEY_USER
+#define KEY_USER -1
+#endif
+
+// ES8311 codec (shared I2S bus with the ES7210 mic ADC); no amp-enable GPIO
+#define I2S_MCLK 19
+#define I2S_BCLK 20
+#define I2S_WS 22
+#define I2S_DOUT 23
+#define I2S_DIN 21
+#define PIN_PA -1
+
+#else
+// ---- Waveshare ESP32-S3-Touch-AMOLED-2.16 (from the vendor sample repo) ----
+#define BOARD_NAME "ESP32-S3-Touch-AMOLED-2.16"
+#define FW_VARIANT "esp32s3"
 
 // CO5300 AMOLED, QSPI
 #define LCD_SDIO0 4
@@ -10,8 +67,6 @@
 #define LCD_SCLK 38
 #define LCD_RESET 39
 #define LCD_CS 12
-#define LCD_WIDTH 480
-#define LCD_HEIGHT 480
 
 // CST9220 touch + shared I2C bus (RTC, IMU, codec, AXP2101 PMU)
 #define IIC_SDA 15
@@ -30,3 +85,4 @@
 #define I2S_DOUT 8
 #define I2S_DIN 10
 #define PIN_PA 46
+#endif

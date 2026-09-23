@@ -46,10 +46,29 @@ BAUD = 115200
 
 def fw_version() -> str:
     ini = (ESP32_DIR / "platformio.ini").read_text()
-    m = re.search(r'-DFW_VERSION=\\"([^"\\]+)\\"', ini)
+    m = re.search(r"^fw_version\s*=\s*(\S+)", ini, re.M)  # [common] fw_version = x.y.z
     if not m:
-        sys.exit("FW_VERSION not found in esp32/platformio.ini")
+        m = re.search(r'-DFW_VERSION=\\"([^"\\$]+)\\"', ini)  # older inline literal
+    if not m:
+        sys.exit("fw_version not found in esp32/platformio.ini")
     return m.group(1)
+
+
+def env_variant(env: str) -> str:
+    """Which board an env builds for - drives the esptool chip, the release
+    filename and the manifest slot. The C6 envs are the ones suffixed -c6."""
+    return "esp32c6" if env.endswith("-c6") else "esp32s3"
+
+
+def default_port() -> str:
+    """COM5 on Windows (the documented bench setup); first USB CDC device elsewhere."""
+    if sys.platform.startswith("win"):
+        return "COM5"
+    for pattern in ("/dev/cu.usbmodem*", "/dev/ttyACM*", "/dev/ttyUSB*"):
+        found = sorted(Path("/").glob(pattern.lstrip("/")))
+        if found:
+            return str(found[0])
+    return ""
 
 
 def run_pio(*args: str) -> None:
@@ -84,7 +103,7 @@ def mirror_second_slot(port: str, env: str) -> None:
     if not esptool.exists():
         print(f"WARNING: {esptool} not found - second slot NOT mirrored")
         return
-    base = [sys.executable, str(esptool), "--chip", "esp32s3", "--port", port,
+    base = [sys.executable, str(esptool), "--chip", env_variant(env), "--port", port,
             "--baud", "460800"]
     print("+ esptool erase_region otadata")
     subprocess.run(base + ["erase_region", "0xe000", "0x2000"], check=True)
@@ -93,17 +112,36 @@ def mirror_second_slot(port: str, env: str) -> None:
     subprocess.run(base + ["write_flash", f"{off:#x}", str(fw)], check=True)
 
 
-def release() -> None:
+def release(env: str = "product") -> None:
+    """Publish one env's build. The S3 build owns the manifest's top-level
+    version/file (what the pre-variant fleet reads); every board also gets a
+    slot under "variants" keyed by chip, which is what current firmware asks
+    for (/api/fw/latest?variant=esp32c6). Other boards' entries are kept."""
     version = fw_version()
-    src = ESP32_DIR / ".pio" / "build" / "product" / "firmware.bin"
+    variant = env_variant(env)
+    src = ESP32_DIR / ".pio" / "build" / env / "firmware.bin"
     if not src.exists():
-        sys.exit(f"{src} missing - build first: python -m platformio run -e product")
+        sys.exit(f"{src} missing - build first: python -m platformio run -e {env}")
     FW_DIR.mkdir(exist_ok=True)
-    dest = FW_DIR / f"product-{version}.bin"
+    suffix = "" if variant == "esp32s3" else f"-{variant[5:]}"  # product-c6-<ver>.bin
+    dest = FW_DIR / f"product{suffix}-{version}.bin"
     shutil.copyfile(src, dest)
-    (FW_DIR / "manifest.json").write_text(
-        json.dumps({"version": version, "file": dest.name}, indent=2))
-    print(f"released {dest.name} ({dest.stat().st_size} bytes) -> fw/manifest.json")
+
+    manifest_path = FW_DIR / "manifest.json"
+    manifest: dict = {}
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except ValueError:
+            manifest = {}
+    variants = dict(manifest.get("variants") or {})
+    variants[variant] = {"version": version, "file": dest.name}
+    if variant == "esp32s3":
+        manifest.update({"version": version, "file": dest.name})
+    manifest.setdefault("variant", "esp32s3")  # which board the top level describes
+    manifest["variants"] = variants
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    print(f"released {dest.name} ({dest.stat().st_size} bytes) -> fw/manifest.json [{variant}]")
     print("deploy the fw/ directory alongside the server to serve this OTA update")
 
 
@@ -179,7 +217,8 @@ def register(server: str, admin_token: str, token: str, name: str) -> bool:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", default="COM5", help="serial port (default COM5)")
+    ap.add_argument("--port", default=default_port(),
+                    help="serial port (default: COM5 on Windows, first USB CDC device elsewhere)")
     ap.add_argument("--name", default="", help="unit label for the manifest, e.g. batch1-003")
     ap.add_argument("--server", default="", help="server base URL to register the token with")
     ap.add_argument("--admin-token", default="", help="server ADMIN_TOKEN for registration")
@@ -187,15 +226,18 @@ def main() -> None:
     ap.add_argument("--no-flash", action="store_true",
                     help="skip build+flash: provision/register the firmware already on the device")
     ap.add_argument("--env", default="product",
-                    help="PlatformIO env to build/flash (default product; e.g. product-dev)")
+                    help="PlatformIO env to build/flash (default product; product-c6 for the "
+                         "ESP32-C6 board, product-dev / product-dev-c6 for a LAN server)")
     ap.add_argument("--release", action="store_true",
-                    help="publish the current product build to fw/ for OTA and exit")
+                    help="publish the --env build (default product) to fw/ for OTA and exit")
     args = ap.parse_args()
 
     if args.release:
-        release()
+        release(args.env)
         return
 
+    if not args.port:
+        sys.exit("no serial device found - pass --port")
     version = fw_version()
     if not args.no_flash:
         if not args.skip_build:
@@ -224,8 +266,8 @@ def main() -> None:
             w.writerow(["date", "name", "mac", "token", "fw", "registered"])
         w.writerow([dt.date.today().isoformat(), args.name, info.get("mac", ""),
                     token, version, "yes" if registered else "no"])
-    print(f"\nunit complete: fw {version}, mac {info.get('mac', '?')}, "
-          f"token {token}\nmanifest: {MANIFEST_CSV}")
+    print(f"\nunit complete: {info.get('board', env_variant(args.env))} fw {version}, "
+          f"mac {info.get('mac', '?')}, token {token}\nmanifest: {MANIFEST_CSV}")
 
 
 if __name__ == "__main__":

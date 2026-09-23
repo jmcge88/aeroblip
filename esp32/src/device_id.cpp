@@ -1,4 +1,5 @@
 #include "device_id.h"
+#include "pin_config.h"
 #include "config.h"
 #include "flight_data.h"
 
@@ -54,9 +55,23 @@ void devicePollSerial() {
         Serial.println("PROVISION_ERROR bad token");
       }
     } else if (!strcmp(line, "DEVINFO")) {
-      Serial.printf("DEVINFO fw=%s mac=%s token=%s server=%s\n", FW_VERSION,
-                    WiFi.macAddress().c_str(), deviceToken()[0] ? "set" : "unset",
-                    serverBaseUrl());
+      Serial.printf("DEVINFO fw=%s mac=%s token=%s server=%s board=%s variant=%s heap=%u\n",
+                    FW_VERSION, WiFi.macAddress().c_str(), deviceToken()[0] ? "set" : "unset",
+                    serverBaseUrl(), BOARD_NAME, FW_VARIANT, ESP.getFreeHeap());
+    } else if (!strcmp(line, "GPIOS")) {
+      // Bench helper: levels of the GPIOs not claimed by the pin map, with
+      // pull-ups on - press an unmapped key and the pin that reads 0 is it
+#if CONFIG_IDF_TARGET_ESP32C6
+      static const int spare[] = {10, 14, 18};
+#else
+      static const int spare[] = {};
+#endif
+      Serial.print("GPIOS");
+      for (size_t i = 0; i < sizeof(spare) / sizeof(spare[0]); i++) {
+        pinMode(spare[i], INPUT_PULLUP);
+        Serial.printf(" %d=%d", spare[i], digitalRead(spare[i]));
+      }
+      Serial.println();
     } else if (!strcmp(line, "REBOOT")) {
       Serial.println("REBOOTING");
       delay(100);

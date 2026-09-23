@@ -39,9 +39,18 @@ static const Note ALARM[] = {
     {740.0f, 110, 0.7f}, {0, 40, 0}, {880.0f, 110, 0.7f}, {0, 40, 0}, {1108.7f, 260, 0.7f},
 };
 
+// Speaker amp enable - not every board has one (PIN_PA < 0)
+static void paEnable(bool on) {
+#if PIN_PA >= 0
+  digitalWrite(PIN_PA, on ? HIGH : LOW);
+#else
+  (void)on;
+#endif
+}
+
 static void playNotes(const Note *notes, int count) {
   static int16_t buf[512 * 2]; // stereo frames
-  digitalWrite(PIN_PA, HIGH);
+  paEnable(true);
   delay(20); // let the amp settle
   for (int n = 0; n < count; n++) {
     const Note &note = notes[n];
@@ -64,7 +73,7 @@ static void playNotes(const Note *notes, int count) {
     }
   }
   delay(30);
-  digitalWrite(PIN_PA, LOW); // amp off between sounds - no idle hiss
+  paEnable(false); // amp off between sounds - no idle hiss
 }
 
 static void applyVolume(uint8_t vol) {
@@ -87,8 +96,10 @@ static void audioTask(void *) {
 }
 
 bool audioInit() {
+#if PIN_PA >= 0
   pinMode(PIN_PA, OUTPUT);
-  digitalWrite(PIN_PA, LOW);
+#endif
+  paEnable(false);
 
   s_i2s.setPins(I2S_BCLK, I2S_WS, I2S_DOUT, I2S_DIN, I2S_MCLK);
   if (!s_i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
