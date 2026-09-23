@@ -110,6 +110,13 @@ static bool fetchManifest(String &version, String &url) {
   return ok;
 }
 
+// "a.b.c" -> comparable number; -1 when it isn't a plain dotted version
+static long versionKey(const char *v) {
+  int a = 0, b = 0, c = 0;
+  if (sscanf(v, "%d.%d.%d", &a, &b, &c) < 2 || a < 0 || b < 0 || c < 0) return -1;
+  return (long)a * 1000000L + b * 1000L + c;
+}
+
 void otaService() {
   markStableOnce(); // a minute of running clears the crash-loop counter
   static uint32_t lastCheck = 0;
@@ -121,6 +128,18 @@ void otaService() {
   String version, url;
   if (!fetchManifest(version, url)) return;
   if (version == FW_VERSION) return;
+  // Never step backwards: a unit flashed over USB ahead of the server's
+  // manifest would otherwise "update" to the older release (and, if that
+  // release is the one being fixed, straight back into the bug). Roll a
+  // release back by publishing the old code under a higher version.
+  long mine = versionKey(FW_VERSION), theirs = versionKey(version.c_str());
+  if (mine >= 0 && theirs >= 0 && theirs < mine) {
+    static bool said = false;
+    if (!said) Serial.printf("[ota] server offers %s, older than %s - staying\n",
+                             version.c_str(), FW_VERSION);
+    said = true;
+    return;
+  }
   if (url.startsWith("/")) url = String(serverBaseUrl()) + url;
   Serial.printf("[ota] updating %s -> %s from %s\n", FW_VERSION, version.c_str(), url.c_str());
 

@@ -133,6 +133,11 @@ other board's image. Pre-variant S3 units (≤ 0.10.3) send no `variant` and
 read the top-level fields, which the S3 release keeps updating. Releasing
 only one board leaves the other's entry untouched.
 
+Devices never downgrade: a unit running a newer version than the manifest
+(a bench unit flashed over USB before the release is pulled on the server)
+logs `[ota] server offers X, older than Y - staying` and waits. To roll a
+release back, publish the old code under a higher version number.
+
 Safety net: 3 consecutive crash reboots (panics/watchdogs, not power cycles)
 without a minute of stable running flips the device back to the previous
 firmware in the other slot. Kill switch: delete `fw/manifest.json` to stop a
