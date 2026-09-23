@@ -50,6 +50,11 @@ bool fetchAircraftPhoto(const char *url, uint16_t *dst, int dstW, int dstH,
     len = http.getSize();
     if (len > 0 && len <= 300 * 1024) {
       jbuf = (uint8_t *)heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      // No PSRAM (ESP32-C6): small files - airline logos, ~1 KB - may use
+      // internal RAM. The headroom check lives in the caller (logo.cpp),
+      // before this request's TLS session took its ~40 KB; by here a small
+      // malloc is always fine. Aircraft photos (tens of KB) stay PSRAM-only.
+      if (!jbuf && len <= 8 * 1024) jbuf = (uint8_t *)malloc(len);
       if (jbuf) {
         WiFiClient *stream = http.getStreamPtr();
         int got = 0;

@@ -42,6 +42,10 @@ void serviceLogos() {
     if (!e.buf)
       e.buf = (uint16_t *)heap_caps_malloc((size_t)e.size * e.size * 2,
                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // No PSRAM (ESP32-C6): a 32 px logo is 2 KB, so take internal RAM while
+    // there's comfortable headroom for the websocket; otherwise try later
+    if (!e.buf && ESP.getMaxAllocHeap() > 64 * 1024)
+      e.buf = (uint16_t *)malloc((size_t)e.size * e.size * 2);
     if (!e.buf) return;
     char url[160];
     snprintf(url, sizeof(url), "%s/api/logo/%s?size=%d", serverBaseUrl(), e.iata, e.size);

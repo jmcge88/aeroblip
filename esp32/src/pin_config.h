@@ -46,6 +46,11 @@
 #define KEY_USER -1
 #endif
 
+// QMI8658 is mounted with its X axis mirrored relative to the S3 board: a
+// left tilt reads as a right tilt. Flip it so the same auto-rotation logic
+// picks the same orientation on both boards.
+#define IMU_X_SIGN -1.0f
+
 // ES8311 codec (shared I2S bus with the ES7210 mic ADC); no amp-enable GPIO
 #define I2S_MCLK 19
 #define I2S_BCLK 20
@@ -77,6 +82,8 @@
 // Physical keys (a third key is the AXP2101 power button)
 #define KEY_BOOT 0  // active low, also strapping pin - input only after boot
 #define KEY_USER 18 // active low, external 10K pull-up
+
+#define IMU_X_SIGN 1.0f // accelerometer X as mounted (reference orientation)
 
 // ES8311 codec (shared I2S bus with the ES7210 mic ADC) + speaker amp enable
 #define I2S_MCLK 42

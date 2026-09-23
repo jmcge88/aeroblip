@@ -24,6 +24,7 @@
 #include "logo.h"
 #include "audio.h"
 #include "ui.h"
+#include "band_canvas.h"
 
 #include "qrcode.h" // ricmoo/QRCode - setup-portal join QR
 
@@ -40,12 +41,36 @@ static Arduino_CO5300 *panel = new Arduino_CO5300(
     bus, LCD_RESET, 0 /* rotation */, LCD_WIDTH, LCD_HEIGHT, 0, 0, 0, 0);
 #ifdef NO_FRAMEBUFFER
 // No PSRAM (ESP32-C6): a 480x480x16 canvas is 460 KB and the chip has 328 KB
-// of heap in total, so every screen draws straight to the panel. flush() is
-// the base class no-op; expect a visible repaint instead of a page flip.
-static Arduino_GFX *canvas = panel;
+// of heap in total. Drawing straight to the panel doesn't work either (the
+// CO5300 drops non-2-pixel-aligned QSPI windows - see band_canvas.h), so
+// each frame is rendered in 32-row strips (30 KB) and blitted full-width.
+// (40 rows left only ~36 KB in the largest block after a full-board frame.)
+#define BAND_H 32
+static BandCanvas *canvas = new BandCanvas(LCD_WIDTH, LCD_HEIGHT, BAND_H, panel);
 #else
 static Arduino_Canvas *canvas = new Arduino_Canvas(LCD_WIDTH, LCD_HEIGHT, panel);
 #endif
+
+// Paint one frame and push it to the panel. The S3 paints once into its
+// full framebuffer; the C6 paints the same frame once per strip.
+static int s_framesLogged = 0; // shared across renderFrame() instantiations
+template <typename F> static void renderFrame(F &&paint) {
+#ifdef NO_FRAMEBUFFER
+  uint32_t t0 = millis();
+  for (int b = 0; b < canvas->bands(); b++) {
+    canvas->beginBand(b);
+    paint();
+    canvas->flushBand();
+  }
+  if (s_framesLogged < 5) { // first few frames only: what the strip passes cost
+    s_framesLogged++;
+    Serial.printf("[ui] frame rendered in %u ms (%d strips)\n", millis() - t0, canvas->bands());
+  }
+#else
+  paint();
+  canvas->flush();
+#endif
+}
 
 // KEY_USER is -1 on boards whose side key isn't mapped yet (see pin_config.h)
 static inline bool userKeyDown() {
@@ -998,11 +1023,6 @@ static void mapTouch(int16_t &tx, int16_t &ty) {
 }
 
 static void pollOrientation() {
-#ifdef NO_FRAMEBUFFER
-  // Drawing straight to the panel: rotation would mean rewriting MADCTL
-  // (the driver's rotation table doesn't match this panel) - stay upright.
-  return;
-#endif
   static uint32_t lastCheck = 0;
   static uint8_t candidate = 0, stableCount = 0;
   if (!imuOk || millis() - lastCheck < 300) return;
@@ -1011,11 +1031,12 @@ static void pollOrientation() {
   IMUdata acc;
   if (!imu.getDataReady() || !imu.getAccelerometer(acc.x, acc.y, acc.z)) return;
 
+  const float ax = acc.x * IMU_X_SIGN; // per-board sensor mounting (pin_config.h)
   int want = -1;
   if (acc.y > 0.8f) want = 0;
-  else if (acc.x > 0.8f) want = 1;
+  else if (ax > 0.8f) want = 1;
   else if (acc.y < -0.8f) want = 2;
-  else if (acc.x < -0.8f) want = 3;
+  else if (ax < -0.8f) want = 3;
   if (want < 0) { stableCount = 0; return; } // flat/ambiguous: keep current
 
   if ((uint8_t)want == g_rot) { stableCount = 0; return; }
@@ -1289,7 +1310,9 @@ static int chooseView(const OverheadData &oh, const BoardData &bd) {
 
 /* ---------- splash / provisioning screen ---------- */
 
-static void drawSplash(const char *line1, const char *line2, const char *line3) {
+// The paint*() functions draw one screen into `canvas`; the draw*() wrappers
+// below them run a paint through renderFrame() (once per strip on the C6)
+static void paintSplash(const char *line1, const char *line2, const char *line3) {
   canvas->fillScreen(RGB565_BLACK);
   canvas->setTextSize(4);
   canvas->setTextColor(RGB565(255, 176, 0));
@@ -1304,12 +1327,11 @@ static void drawSplash(const char *line1, const char *line2, const char *line3) 
     canvas->setCursor((LCD_WIDTH - (int)strlen(lines[i]) * 12) / 2, y);
     canvas->print(lines[i]);
   }
-  canvas->flush();
 }
 
 // Firmware-update screen: progress bar + the one instruction that matters.
 // Drawn by the UI task while the net task downloads and flashes.
-static void drawOtaScreen(int pct, const char *toVersion) {
+static void paintOtaScreen(int pct, const char *toVersion) {
   canvas->fillScreen(RGB565_BLACK);
   canvas->setTextSize(3);
   canvas->setTextColor(RGB565(255, 176, 0));
@@ -1343,12 +1365,11 @@ static void drawOtaScreen(int pct, const char *toVersion) {
   const char *sub = "RESTARTS AUTOMATICALLY WHEN DONE";
   canvas->setCursor((LCD_WIDTH - (int)strlen(sub) * 12) / 2, 360);
   canvas->print(sub);
-  canvas->flush();
 }
 
 // Setup-portal screen: a WIFI: join QR so one phone scan connects to the
 // hotspot (the captive portal then opens itself), with manual steps below.
-static void drawPortalSplash() {
+static void paintPortalSplash() {
   canvas->fillScreen(RGB565_BLACK);
   canvas->setTextSize(3);
   canvas->setTextColor(RGB565(255, 176, 0));
@@ -1406,7 +1427,16 @@ static void drawPortalSplash() {
   const char *browse = "THEN BROWSE TO 192.168.4.1";
   canvas->setCursor((LCD_WIDTH - (int)strlen(browse) * 12) / 2, y);
   canvas->print(browse);
-  canvas->flush();
+}
+
+static void drawSplash(const char *line1, const char *line2, const char *line3) {
+  renderFrame([&] { paintSplash(line1, line2, line3); });
+}
+static void drawOtaScreen(int pct, const char *toVersion) {
+  renderFrame([&] { paintOtaScreen(pct, toVersion); });
+}
+static void drawPortalSplash() {
+  renderFrame([] { paintPortalSplash(); });
 }
 
 /* ---------- arduino ---------- */
@@ -1620,7 +1650,7 @@ void loop() {
       int flipIn = chooseView(oh, bd);
       if (g_sleeping) {
         g_showInfo = false;
-        uiDrawSleep(canvas, issLine);
+        renderFrame([&] { uiDrawSleep(canvas, issLine); });
       } else if (g_showInfo) {
         DeviceInfo di = {};
         snprintf(di.ssid, sizeof(di.ssid), "%s", WiFi.SSID().c_str());
@@ -1644,7 +1674,7 @@ void loop() {
         }
         snprintf(di.fw, sizeof(di.fw), "%s", FW_VERSION);
         di.uptime_s = millis() / 1000;
-        uiDrawInfo(canvas, di);
+        renderFrame([&] { uiDrawInfo(canvas, di); });
       } else {
         int pages[VIEW_COUNT];
         int n = buildPages(pages);
@@ -1686,11 +1716,12 @@ void loop() {
         g_followShownIdx = followIdx;
         UiExtras ex = {&fl, &wx, issLine, activeToast, followIdx};
 
-        uiDraw(canvas, g_view, oh, bd, cfg, WiFi.status() == WL_CONNECTED,
-               g_view == VIEW_OVERHEAD ? spotIdx : -1, emIdx, galert, n,
-               pageIndex(pages, n), flipIn, &ph, &ex);
+        renderFrame([&] {
+          uiDraw(canvas, g_view, oh, bd, cfg, WiFi.status() == WL_CONNECTED,
+                 g_view == VIEW_OVERHEAD ? spotIdx : -1, emIdx, galert, n,
+                 pageIndex(pages, n), flipIn, &ph, &ex);
+        });
       }
-      canvas->flush();
       applyBrightness(g_sleeping);
     } else if (g_netState == NET_PORTAL) {
       drawPortalSplash();

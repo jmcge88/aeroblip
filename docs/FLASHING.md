@@ -35,10 +35,17 @@ ES8311 codec; the firmware picks the GPIO map from the chip it's built for
 (`esp32/src/pin_config.h`). What differs on the **ESP32-C6** board:
 
 - **No PSRAM** (328 KB of heap total), so the `-c6` envs build with
-  `NO_FRAMEBUFFER`: the UI draws straight to the panel instead of through a
-  460 KB canvas. Repaints are visible rather than page-flipped, aircraft
-  photos and airline logos (PSRAM-only buffers) are skipped, and IMU
-  auto-rotation is off (the panel stays upright).
+  `NO_FRAMEBUFFER`: instead of a 460 KB full-screen canvas, each frame is
+  painted in fifteen 32-row strips through a 30 KB buffer
+  (`esp32/src/band_canvas.h`) and blitted strip by strip. Drawing straight
+  to the panel is not an option - the CO5300 silently drops QSPI writes
+  whose column window isn't 2-pixel aligned, which is every glyph pixel and
+  odd-width line, and the screen stays black. The strip canvas rotates in
+  software with the same mapping as the S3's canvas, so IMU auto-rotation
+  works. Aircraft photos (a JPEG buffer of up to 300 KB plus two 53 KB
+  bitmaps) are PSRAM-only and stay off; airline logos (2 KB each) are
+  fetched into internal RAM whenever the largest free block is above 64 KB,
+  so they may appear a little later than on the S3.
 - **Keys**: BOOT is GPIO9. Holding it at *power-on* enters ROM download mode
   (that's the chip, not us) — to force the setup portal, hold BOOT once the
   CONNECTING splash is up instead. The side KEY button's GPIO isn't in any
