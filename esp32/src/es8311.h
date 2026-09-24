@@ -126,6 +126,9 @@ esp_err_t es8311_voice_volume_set(es8311_handle_t dev, int volume, int *volume_s
  */
 esp_err_t es8311_voice_volume_get(es8311_handle_t dev, int *volume);
 
+/* aeroblip addition: raw DAC volume register write (0.5 dB/step, 0xBF = 0 dB) */
+esp_err_t es8311_dac_volume_reg_set(es8311_handle_t dev, uint8_t reg32);
+
 /**
  * @brief Print out ES8311 register content
  *

@@ -5,6 +5,9 @@
 
 #include <Preferences.h>
 #include <WiFi.h>
+#include <Wire.h>
+#include "audio.h"
+#include <esp_mac.h>
 
 static char s_token[49] = "";
 static bool s_loaded = false;
@@ -55,8 +58,19 @@ void devicePollSerial() {
         Serial.println("PROVISION_ERROR bad token");
       }
     } else if (!strcmp(line, "DEVINFO")) {
+      // On the P4 the WiFi MAC lives on the esp_hosted C6 and reads as zeros
+      // until the station is up - fall back to the chip's own factory MAC
+      String mac = WiFi.macAddress();
+      if (mac == "00:00:00:00:00:00") {
+        uint8_t m[6];
+        if (esp_efuse_mac_get_default(m) == ESP_OK) {
+          char b[18];
+          snprintf(b, sizeof(b), "%02X:%02X:%02X:%02X:%02X:%02X", m[0], m[1], m[2], m[3], m[4], m[5]);
+          mac = b;
+        }
+      }
       Serial.printf("DEVINFO fw=%s mac=%s token=%s server=%s board=%s variant=%s heap=%u\n",
-                    FW_VERSION, WiFi.macAddress().c_str(), deviceToken()[0] ? "set" : "unset",
+                    FW_VERSION, mac.c_str(), deviceToken()[0] ? "set" : "unset",
                     serverBaseUrl(), BOARD_NAME, FW_VARIANT, ESP.getFreeHeap());
     } else if (!strcmp(line, "GPIOS")) {
       // Bench helper: levels of the GPIOs not claimed by the pin map, with
@@ -72,6 +86,17 @@ void devicePollSerial() {
         Serial.printf(" %d=%d", spare[i], digitalRead(spare[i]));
       }
       Serial.println();
+    } else if (!strcmp(line, "I2CSCAN")) {
+      // Bench helper: which I2C addresses answer on the shared bus
+      Serial.print("I2CSCAN");
+      for (uint8_t a = 1; a < 0x7F; a++) {
+        Wire.beginTransmission(a);
+        if (Wire.endTransmission() == 0) Serial.printf(" 0x%02X", a);
+      }
+      Serial.println();
+    } else if (!strcmp(line, "CHIME")) {
+      audioPlayChime(); // bench helper: same path as the settings-page test
+      Serial.println("CHIME queued");
     } else if (!strcmp(line, "REBOOT")) {
       Serial.println("REBOOTING");
       delay(100);

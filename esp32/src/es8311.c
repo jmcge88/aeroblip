@@ -375,6 +375,13 @@ esp_err_t es8311_voice_volume_set(es8311_handle_t dev, int volume, int *volume_s
     return es8311_write_reg(dev, ES8311_DAC_REG32, reg32);
 }
 
+// aeroblip addition: write DAC volume register 0x32 directly (0.5 dB/step,
+// 0xBF = 0 dB) so the caller can pick its own volume curve
+esp_err_t es8311_dac_volume_reg_set(es8311_handle_t dev, uint8_t reg32)
+{
+    return es8311_write_reg(dev, ES8311_DAC_REG32, reg32);
+}
+
 esp_err_t es8311_voice_volume_get(es8311_handle_t dev, int *volume)
 {
     uint8_t reg32;

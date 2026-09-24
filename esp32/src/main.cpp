@@ -6,6 +6,7 @@
 
 #include <Arduino_GFX_Library.h>
 #include <TouchDrvCSTXXX.hpp>
+#include <TouchDrvGT911.hpp>
 #include <SensorQMI8658.hpp>
 #include <WiFiManager.h>
 #include <ArduinoWebsockets.h>
@@ -25,6 +26,7 @@
 #include "audio.h"
 #include "ui.h"
 #include "band_canvas.h"
+#include "dsi_display.h"
 
 #include "qrcode.h" // ricmoo/QRCode - setup-portal join QR
 
@@ -35,10 +37,21 @@
 // overflows once overhead + board + alerts all arrive
 SET_LOOP_TASK_STACK_SIZE(20 * 1024);
 
+#ifdef PANEL_DSI
+// ESP32-P4 board: 720x720 DSI LCD. The UI still paints a 480x480 canvas;
+// renderFrame() scales it into the panel framebuffer (dsi_display.h).
+static Arduino_ESP32DSIPanel *dsipanel = new Arduino_ESP32DSIPanel(
+    DSI_HSYNC_PW, DSI_HSYNC_BP, DSI_HSYNC_FP, DSI_VSYNC_PW, DSI_VSYNC_BP, DSI_VSYNC_FP,
+    DSI_DPI_CLOCK_HZ, DSI_LANE_MBPS);
+static Arduino_DSI_Display *panel = new Arduino_DSI_Display(
+    PANEL_W, PANEL_H, dsipanel, 0 /* rotation */, false /* auto_flush */, LCD_RESET,
+    st7703_init_operations, sizeof(st7703_init_operations) / sizeof(st7703_init_operations[0]));
+#else
 static Arduino_DataBus *bus = new Arduino_ESP32QSPI(
     LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3);
 static Arduino_CO5300 *panel = new Arduino_CO5300(
     bus, LCD_RESET, 0 /* rotation */, LCD_WIDTH, LCD_HEIGHT, 0, 0, 0, 0);
+#endif
 #ifdef NO_FRAMEBUFFER
 // No PSRAM (ESP32-C6): a 480x480x16 canvas is 460 KB and the chip has 328 KB
 // of heap in total. Drawing straight to the panel doesn't work either (the
@@ -66,6 +79,14 @@ template <typename F> static void renderFrame(F &&paint) {
     s_framesLogged++;
     Serial.printf("[ui] frame rendered in %u ms (%d strips)\n", millis() - t0, canvas->bands());
   }
+#elif defined(PANEL_DSI)
+  uint32_t t0 = millis();
+  paint();
+  dsiPresent(canvas, panel);
+  if (s_framesLogged < 5) { // first few frames only: what the 1.5x upscale costs
+    s_framesLogged++;
+    Serial.printf("[ui] frame rendered in %u ms (upscaled to %dx%d)\n", millis() - t0, PANEL_W, PANEL_H);
+  }
 #else
   paint();
   canvas->flush();
@@ -81,7 +102,11 @@ static inline bool userKeyDown() {
 #endif
 }
 
+#ifdef PANEL_DSI
+static TouchDrvGT911 touch;
+#else
 static TouchDrvCST92xx touch;
+#endif
 static bool touchOk = false;
 static XPowersPMU power;
 static bool powerOk = false;
@@ -89,7 +114,9 @@ static SensorQMI8658 imu;
 static bool imuOk = false;
 static uint8_t g_rot = 0; // current display rotation (0-3), driven by the IMU
 static volatile bool touchPending = false;
+#if TP_INT >= 0
 static void IRAM_ATTR onTouchIrq() { touchPending = true; }
+#endif
 
 // Shared state: written by the network task (core 0), read by the UI loop (core 1)
 static SemaphoreHandle_t dataLock;
@@ -1099,12 +1126,26 @@ static void pollTouch() {
   static int16_t startX, startY, lastX, lastY;
 
   if (!touchOk) return;
+#if TP_INT < 0
+  // No interrupt line: poll the controller every 20 ms
+  static uint32_t lastPoll = 0;
+  if (millis() - lastPoll >= 20) {
+    lastPoll = millis();
+    touchPending = true;
+  }
+#endif
   bool pending = touchPending;
   touchPending = false;
   if (!pending && !gestureActive) return;
 
   int16_t x[2], y[2];
   uint8_t n = touch.getPoint(x, y, 2);
+#ifdef PANEL_DSI
+  if (n > 0) { // panel pixels -> logical 480x480 UI space
+    x[0] = x[0] * LCD_WIDTH / PANEL_W;
+    y[0] = y[0] * LCD_HEIGHT / PANEL_H;
+  }
+#endif
   if (n > 0) mapTouch(x[0], y[0]);
   if (n > 0) {
     if (!gestureActive) {
@@ -1192,7 +1233,11 @@ static int g_lastBrightness = -1;
 
 static void setBrightnessLevel(int level) {
   if (level != g_lastBrightness) {
+#ifdef PANEL_DSI
+    dsiBacklight(level);
+#else
     panel->setBrightness(level);
+#endif
     g_lastBrightness = level;
   }
 }
@@ -1459,8 +1504,10 @@ void setup() {
 
   // PMU first: on the C6 board the panel/touch/codec rails come from the
   // AXP2101 and must be up before the panel is initialised
+#ifndef PANEL_DSI // the P4 LCD board has no PMU or IMU - don't spam the bus probing
   powerOk = power.begin(Wire, AXP2101_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
   if (!powerOk) Serial.println("[boot] AXP2101 not found - battery status unavailable");
+#endif
 #if CONFIG_IDF_TARGET_ESP32C6
   if (powerOk) {
     // Vendor bring-up (Waveshare C6 examples): DC1 + ALDO1-4 at 3.3 V. The
@@ -1474,13 +1521,23 @@ void setup() {
   }
 #endif
 
+#ifdef PANEL_DSI
+  dsiBacklight(0); // dark until the first frame is in the framebuffer
+  dsiPowerOn();
+  if (!canvas->begin()) {
+    Serial.println("[boot] canvas/panel begin FAILED");
+  }
+#else
   if (!canvas->begin()) {
     Serial.println("[boot] canvas/panel begin FAILED");
   }
   bus->writeC8D8(0x36, LCD_MADCTL); // panel orientation, per vendor sample
   panel->setBrightness(BRIGHT_DAY);
+#endif
 
+#ifndef PANEL_DSI
   imuOk = imu.begin(Wire, QMI8658_L_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
+#endif
   if (imuOk) {
     imu.configAccelerometer(SensorQMI8658::ACC_RANGE_4G, SensorQMI8658::ACC_ODR_125Hz,
                             SensorQMI8658::LPF_MODE_0);
@@ -1492,19 +1549,31 @@ void setup() {
   audioInit(); // after Wire.begin; harmless no-op if the codec is missing
 
   touch.setPins(TP_RST, TP_INT);
+#ifdef PANEL_DSI
+  // INT/RST not wired, so the driver probes 0x5D then 0x14 by itself
+  touchOk = touch.begin(Wire, GT911_SLAVE_ADDRESS_L, IIC_SDA, IIC_SCL);
+#else
   touchOk = touch.begin(Wire, CST92XX_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
+#endif
   if (touchOk) {
+#ifndef PANEL_DSI
     touch.setMaxCoordinates(LCD_WIDTH, LCD_HEIGHT);
     touch.setSwapXY(true);
     touch.setMirrorXY(true, false);
+#endif
+#if TP_INT >= 0
     pinMode(TP_INT, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(TP_INT), onTouchIrq, FALLING);
+#endif
     Serial.printf("[boot] touch ok: %s\n", touch.getModelName());
   } else {
     Serial.println("[boot] touch not found - swipe disabled, buttons still work");
   }
 
   drawSplash("CONNECTING TO WIFI...", nullptr, nullptr);
+#ifdef PANEL_DSI
+  dsiBacklight(BRIGHT_DAY);
+#endif
 
   g_photo.buf = (uint16_t *)heap_caps_malloc(PHOTO_W * PHOTO_H * 2, MALLOC_CAP_SPIRAM);
   g_photoScratch = (uint16_t *)heap_caps_malloc(PHOTO_W * PHOTO_H * 2, MALLOC_CAP_SPIRAM);
@@ -1665,7 +1734,11 @@ void loop() {
                  (g_screens & SCR_EMERGENCY) ? "7700 " : "",
                  g_followCount > 0 ? "FOLW" : "");
         if (!powerOk) {
+#ifdef PANEL_DSI
+          snprintf(di.battery, sizeof(di.battery), "USB POWER (NO BATTERY)");
+#else
           snprintf(di.battery, sizeof(di.battery), "UNKNOWN");
+#endif
         } else if (!power.isBatteryConnect()) {
           snprintf(di.battery, sizeof(di.battery), "USB POWER (NO BATTERY)");
         } else {

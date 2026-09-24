@@ -57,8 +57,13 @@ def fw_version() -> str:
 
 def env_variant(env: str) -> str:
     """Which board an env builds for - drives the esptool chip, the release
-    filename and the manifest slot. The C6 envs are the ones suffixed -c6."""
-    return "esp32c6" if env.endswith("-c6") else "esp32s3"
+    filename and the manifest slot. The C6 envs are the ones suffixed -c6,
+    the P4 (720x720 LCD board) envs -p4."""
+    if env.endswith("-c6"):
+        return "esp32c6"
+    if env.endswith("-p4"):
+        return "esp32p4"
+    return "esp32s3"
 
 
 def default_port() -> str:
@@ -124,7 +129,7 @@ def release(env: str = "product") -> None:
     if not src.exists():
         sys.exit(f"{src} missing - build first: python -m platformio run -e {env}")
     FW_DIR.mkdir(exist_ok=True)
-    dest = FW_DIR / f"product-{variant[5:]}-{version}.bin"  # product-s3-<ver>.bin / product-c6-<ver>.bin
+    dest = FW_DIR / f"product-{variant[5:]}-{version}.bin"  # product-s3/-c6/-p4-<ver>.bin
     shutil.copyfile(src, dest)
 
     manifest_path = FW_DIR / "manifest.json"
@@ -187,8 +192,13 @@ def provision(port: str, token: str, expect_boot: bool = True) -> dict:
                 sys.exit("no boot banner on serial - flash may have failed")
         time.sleep(1)
 
-        ser.write(f"PROVISION {token}\n".encode())
-        if not wait_serial_line(ser, f"PROVISIONED {token}", 10):
+        # Retry: a line sent while the firmware is still in setup() can be
+        # lost (seen on the P4 board, whose UART console sits behind a CH343)
+        for _ in range(3):
+            ser.write(f"PROVISION {token}\n".encode())
+            if wait_serial_line(ser, f"PROVISIONED {token}", 10):
+                break
+        else:
             sys.exit("device did not acknowledge PROVISION")
         print("token provisioned")
 
@@ -226,8 +236,8 @@ def main() -> None:
     ap.add_argument("--no-flash", action="store_true",
                     help="skip build+flash: provision/register the firmware already on the device")
     ap.add_argument("--env", default="product",
-                    help="PlatformIO env to build/flash (default product; product-c6 for the "
-                         "ESP32-C6 board, product-dev / product-dev-c6 for a LAN server)")
+                    help="PlatformIO env to build/flash (default product; product-c6 / product-p4 for the "
+                         "ESP32-C6 / ESP32-P4 boards, product-dev / product-dev-c6 for a LAN server)")
     ap.add_argument("--release", action="store_true",
                     help="publish the --env build (default product) to fw/ for OTA and exit")
     args = ap.parse_args()

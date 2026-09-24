@@ -76,8 +76,20 @@ static void playNotes(const Note *notes, int count) {
   paEnable(false); // amp off between sounds - no idle hiss
 }
 
+// Settings-page volume (0-100) -> ES8311 DAC register 0x32, which is in
+// 0.5 dB steps (0xBF = 0 dB). The driver's own mapping is linear over the
+// whole register (-95.5..+32 dB), so the bottom half of the slider was
+// silent and 80 was +6 dB of clipping-prone digital gain. Audio taper
+// instead: 100 = 0 dB, 0.6 dB per step down (80 = -12 dB, 50 = -30 dB,
+// 1 = -59.4 dB), 0 = mute.
+static uint8_t volumeToReg(uint8_t vol) {
+  if (vol == 0) return 0;
+  if (vol > 100) vol = 100;
+  return (uint8_t)(0xBF - (100 - vol) * 6 / 5);
+}
+
 static void applyVolume(uint8_t vol) {
-  if (s_codec) es8311_voice_volume_set(s_codec, vol > 100 ? 100 : vol, NULL);
+  if (s_codec) es8311_dac_volume_reg_set(s_codec, volumeToReg(vol));
 }
 
 static void audioTask(void *) {
@@ -122,7 +134,7 @@ bool audioInit() {
   };
   if (es8311_init(s_codec, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16) != ESP_OK ||
       es8311_sample_frequency_config(s_codec, SAMPLE_RATE * 256, SAMPLE_RATE) != ESP_OK ||
-      es8311_voice_volume_set(s_codec, CODEC_VOLUME, NULL) != ESP_OK) {
+      es8311_dac_volume_reg_set(s_codec, volumeToReg(CODEC_VOLUME)) != ESP_OK) {
     Serial.println("[audio] ES8311 init failed");
     return false;
   }
@@ -145,3 +157,4 @@ void audioSetVolumes(uint8_t chimeVol, uint8_t alarmVol) {
   s_volChime = chimeVol > 100 ? 100 : chimeVol;
   s_volAlarm = alarmVol > 100 ? 100 : alarmVol;
 }
+

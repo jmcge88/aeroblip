@@ -1,9 +1,11 @@
 #pragma once
 #include <sdkconfig.h> // CONFIG_IDF_TARGET_*
 
-// Both supported boards carry the same 2.16" 480x480 CO5300 AMOLED, CST9220
+// The two AMOLED boards carry the same 2.16" 480x480 CO5300 AMOLED, CST9220
 // touch, AXP2101 PMU, QMI8658 IMU and ES8311 codec - only the MCU and the
-// GPIO map differ. The build picks the map from the chip it targets.
+// GPIO map differ. The P4 board is a different display (720x720 DSI LCD) that
+// renders the same 480x480 UI scaled up. The build picks the map from the
+// chip it targets.
 #define LCD_WIDTH 480
 #define LCD_HEIGHT 480
 
@@ -14,7 +16,47 @@
 #define LCD_MADCTL 0xA0
 #endif
 
-#if CONFIG_IDF_TARGET_ESP32C6
+#if CONFIG_IDF_TARGET_ESP32P4
+// ---- Waveshare ESP32-P4-WIFI6-Touch-LCD-4B ------------------------------
+// Pin map from the vendor BSP (components.espressif.com
+// waveshare/esp32_p4_wifi6_touch_lcd_4b 3.0.1). ESP32-P4 + 32MB PSRAM, 32MB
+// flash. No radio of its own: WiFi comes from the on-board ESP32-C6 over SDIO
+// (esp_hosted - the Arduino core's default P4 SDIO pins match this board).
+// No PMU, no IMU, no side key.
+#define BOARD_NAME "ESP32-P4-WIFI6-Touch-LCD-4B"
+#define FW_VARIANT "esp32p4"
+
+// 4" 720x720 IPS, ST7703 over 2-lane MIPI-DSI. The UI is laid out for 480x480
+// (LCD_WIDTH/HEIGHT above stay the logical size); dsi_display.h scales each
+// frame 1.5x into the panel's framebuffer.
+#define PANEL_DSI 1
+#define PANEL_W 720
+#define PANEL_H 720
+#define LCD_RESET 27
+#define LCD_BL 26 // backlight PWM, active low (BSP drives it with output_invert)
+
+// GT911 touch + codecs on I2C. Touch INT/RST are not wired to GPIOs: the
+// touch is polled.
+#define IIC_SDA 7
+#define IIC_SCL 8
+#define TP_INT -1
+#define TP_RST -1
+
+// BOOT is GPIO35 (the P4's boot-mode strapping pin, input only after boot)
+#define KEY_BOOT 35
+#define KEY_USER -1
+
+#define IMU_X_SIGN 1.0f // no IMU on this board - unused
+
+// ES8311 codec (shared I2S bus with the ES7210 mic ADC) + speaker amp enable
+#define I2S_MCLK 13
+#define I2S_BCLK 12
+#define I2S_WS 10
+#define I2S_DOUT 9
+#define I2S_DIN 11
+#define PIN_PA 53
+
+#elif CONFIG_IDF_TARGET_ESP32C6
 // ---- Waveshare ESP32-C6-Touch-AMOLED-2.16 -------------------------------
 // Pin map from the vendor repo (02_Example/*/user_config.h and the XiaoZhi
 // board config). Single core, 16MB flash, NO PSRAM (~328 KB heap).

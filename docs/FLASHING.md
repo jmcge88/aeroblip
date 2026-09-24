@@ -126,13 +126,19 @@ boot and daily, and self-update when the version differs from theirs.
 **Bump `fw_version` in platformio.ini `[common]` first** or devices will see
 "same version" and skip it.
 
-Two boards, one manifest: release each board's build separately —
+Three boards, one manifest: release each board's build separately —
 
 ```bash
-cd esp32; python -m platformio run -e product; python -m platformio run -e product-c6; cd ..
+cd esp32; python -m platformio run -e product -e product-c6 -e product-p4; cd ..
 python tools\flash_product.py --release                    # -> fw/product-s3-<ver>.bin, top-level + variants.esp32s3
 python tools\flash_product.py --release --env product-c6   # -> fw/product-c6-<ver>.bin, variants.esp32c6
+python tools\flash_product.py --release --env product-p4   # -> fw/product-p4-<ver>.bin, variants.esp32p4
 ```
+
+The P4 board (ESP32-P4-WIFI6-Touch-LCD-4B) flashes through its CH343
+USB-UART port, which enumerates as `/dev/cu.usbmodem<serial>` too - with
+another board plugged in, pass `--port` explicitly rather than trusting the
+auto-detect.
 
 The manifest keeps a per-chip entry under `variants`; devices ask
 `/api/fw/latest?variant=<chip>` and get their own entry or a 404 — never the
